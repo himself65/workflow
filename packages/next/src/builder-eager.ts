@@ -1,3 +1,5 @@
+import assert from 'node:assert';
+import { once } from 'node:events';
 import { constants, type Dirent } from 'node:fs';
 import {
   access,
@@ -70,8 +72,87 @@ export async function getNextBuilderEager(
       }
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
-      const inputFiles = await this.getInputFiles();
-      const tsconfigPath = await this.findTsConfigPath();
+      const normalizePath = (pathname: string) =>
+        (isAbsolute(pathname)
+          ? pathname
+          : resolve(this.config.workingDir, pathname)
+        ).replace(/\\/g, '/');
+      const watchableExtensions = new Set([
+        '.js',
+        '.jsx',
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.cjs',
+        '.mjs',
+      ]);
+      const isWatchableFile = (path: string) =>
+        watchableExtensions.has(extname(path));
+      const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
+      const normalizedDistDir = normalizePath(this.config.distDir);
+      const isIgnoredWatchPath = createWatchIgnorePredicate({
+        workingDir: this.config.workingDir,
+        projectRoot: this.transformProjectRoot,
+        extraFragments: [normalizedGeneratedDir],
+      });
+      const hasIgnoredPathFragment = (normalizedPath: string) => {
+        if (
+          normalizedPath === normalizedDistDir ||
+          normalizedPath.startsWith(`${normalizedDistDir}/`)
+        ) {
+          return true;
+        }
+        return isIgnoredWatchPath(normalizedPath);
+      };
+      const logDevHmr = (...args: unknown[]) => {
+        if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+          console.log(...args);
+        }
+      };
+
+      let initialBuildChanged = false;
+      const markInitialBuildChanged = (pathname: string) => {
+        if (isWatchableFile(normalizePath(pathname))) {
+          initialBuildChanged = true;
+        }
+      };
+      // Chokidar 4 registers an fs.watch per directory, so prune ignored trees
+      // before it walks the project.
+      const watcher = this.config.watch
+        ? chokidar.watch(this.config.workingDir, {
+            ignoreInitial: true,
+            followSymlinks: true,
+            ignored: (pathname) => {
+              const normalizedPath = normalizePath(String(pathname));
+              const extension = extname(normalizedPath);
+              if (extension && !watchableExtensions.has(extension)) {
+                return true;
+              }
+              return hasIgnoredPathFragment(normalizedPath);
+            },
+          })
+        : undefined;
+      const closeWatcherOnError = async <T>(promise: Promise<T>) => {
+        try {
+          return await promise;
+        } catch (error) {
+          await watcher?.close();
+          throw error;
+        }
+      };
+      if (watcher) {
+        watcher.on('add', markInitialBuildChanged);
+        watcher.on('change', markInitialBuildChanged);
+        watcher.on('unlink', markInitialBuildChanged);
+        watcher.on('error', (error) => {
+          console.error('Workflow dev watcher error', error);
+        });
+        await closeWatcherOnError(once(watcher, 'ready'));
+      }
+
+      const inputFiles = await closeWatcherOnError(this.getInputFiles());
+      const tsconfigPath = await closeWatcherOnError(this.findTsConfigPath());
 
       const options = {
         inputFiles,
@@ -80,8 +161,12 @@ export async function getNextBuilderEager(
       };
 
       // V2: Build combined route (replaces separate step + flow routes)
-      const combinedResult = await this.buildCombinedFunction(options);
-      await this.buildWebhookRoute({ workflowGeneratedDir });
+      const combinedResult = await closeWatcherOnError(
+        this.buildCombinedFunction(options)
+      );
+      await closeWatcherOnError(
+        this.buildWebhookRoute({ workflowGeneratedDir })
+      );
 
       const writeManifest = async (
         sourceManifest: WorkflowManifest | undefined
@@ -117,14 +202,16 @@ export async function getNextBuilderEager(
         }
       };
 
-      await writeManifest(combinedResult?.manifest);
+      await closeWatcherOnError(writeManifest(combinedResult?.manifest));
 
-      await this.writeFunctionsConfig(outputDir);
+      await closeWatcherOnError(this.writeFunctionsConfig(outputDir));
 
       if (this.config.watch) {
+        assert(watcher, 'Invariant: expected workflow watcher in watch mode');
         // TODO: implement watch mode for combined bundle
         // For now, fall back to full rebuild on file changes
         if (!combinedResult?.interimBundleCtx || !combinedResult.bundleFinal) {
+          await watcher.close();
           throw new Error(
             'Invariant: expected workflow build context in watch mode'
           );
@@ -146,49 +233,8 @@ export async function getNextBuilderEager(
           '__step_registrations.js'
         );
 
-        const normalizePath = (pathname: string) =>
-          (isAbsolute(pathname)
-            ? pathname
-            : resolve(this.config.workingDir, pathname)
-          ).replace(/\\/g, '/');
         let sourceSnapshots = new Map<string, SourceSnapshot>();
         let buildInProgress = false;
-
-        const watchableExtensions = new Set([
-          '.js',
-          '.jsx',
-          '.ts',
-          '.tsx',
-          '.mts',
-          '.cts',
-          '.cjs',
-          '.mjs',
-        ]);
-        const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
-        const normalizedDistDir = normalizePath(this.config.distDir);
-
-        // Prune the dev watch set to keep chokidar from registering an
-        // fs.watch per directory across the whole project tree (chokidar 4
-        // dropped fsevents, so on macOS that exhausts the fd limit -> EMFILE
-        // on large monorepos). This honors `.gitignore` and the
-        // WORKFLOW_DEV_WATCH_IGNORED_PATHS env var in addition to the
-        // built-in fragments. The generated workflow dir is passed as an
-        // extra fragment so it is pruned regardless of `.gitignore`.
-        const isIgnoredWatchPath = createWatchIgnorePredicate({
-          workingDir: this.config.workingDir,
-          projectRoot: this.transformProjectRoot,
-          extraFragments: [normalizedGeneratedDir],
-        });
-
-        const hasIgnoredPathFragment = (normalizedPath: string) => {
-          if (
-            normalizedPath === normalizedDistDir ||
-            normalizedPath.startsWith(`${normalizedDistDir}/`)
-          ) {
-            return true;
-          }
-          return isIgnoredWatchPath(normalizedPath);
-        };
 
         const readSourceSnapshot = (file: string) =>
           createSourceSnapshot({ file, detectWorkflowPatterns });
@@ -282,9 +328,6 @@ export async function getNextBuilderEager(
           sourceSnapshots = nextSourceSnapshots;
         };
 
-        const isWatchableFile = (path: string) =>
-          watchableExtensions.has(extname(path));
-
         const readKnownFileAliases = async () => {
           const aliases = new Map<string, string>();
           const relevantFiles = getRelevantFiles({
@@ -352,15 +395,9 @@ export async function getNextBuilderEager(
           return { aliases, addKnownFile };
         };
 
-        const logDevHmr = (...args: unknown[]) => {
-          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
-            console.log(...args);
-          }
-        };
-
-        sourceSnapshots = await snapshotSources();
+        sourceSnapshots = await closeWatcherOnError(snapshotSources());
         let { aliases: knownFileAliases, addKnownFile: rememberKnownFile } =
-          await readKnownFileAliases();
+          await closeWatcherOnError(readKnownFileAliases());
 
         const refreshKnownFiles = async () => {
           const nextKnown = await readKnownFileAliases();
@@ -462,18 +499,9 @@ export async function getNextBuilderEager(
           scheduleFileChange(canonicalPath);
         };
 
-        const watcher = chokidar.watch(this.config.workingDir, {
-          ignoreInitial: true,
-          followSymlinks: true,
-          ignored: (pathname) => {
-            const normalizedPath = normalizePath(String(pathname));
-            const extension = extname(normalizedPath);
-            if (extension && !watchableExtensions.has(extension)) {
-              return true;
-            }
-            return hasIgnoredPathFragment(normalizedPath);
-          },
-        });
+        watcher.off('add', markInitialBuildChanged);
+        watcher.off('change', markInitialBuildChanged);
+        watcher.off('unlink', markInitialBuildChanged);
 
         watcher.on('add', (pathname) => {
           scheduleBuildOverlap();
@@ -487,12 +515,10 @@ export async function getNextBuilderEager(
           scheduleBuildOverlap();
           handleFileRemoved(pathname);
         });
-        watcher.on('error', (error) => {
-          console.error('Workflow dev watcher error', error);
-        });
-        watcher.on('ready', () => {
-          logDevHmr('workflow dev hmr: ready');
-        });
+        logDevHmr('workflow dev hmr: ready');
+        if (initialBuildChanged) {
+          scheduleRebuild({ kind: 'full' });
+        }
       }
     }
 
