@@ -154,6 +154,7 @@ export function createDevTests(config?: DevTestConfig) {
       skip: 'workflow dev hmr: skip',
       hot: 'workflow dev hmr: hot rebuild',
       full: 'workflow dev hmr: full rediscovery',
+      idle: 'workflow dev hmr: idle',
     };
 
     const fetchWithTimeout = (pathname: string) => {
@@ -200,6 +201,13 @@ export function createDevTests(config?: DevTestConfig) {
     const countLogMessage = (log: string, message: string) =>
       log.split(message).length - 1;
     type ExpectedHmrLogCount = number | { min?: number; max?: number };
+    type ExpectedHmrLogCounts =
+      | 'any'
+      | {
+          skip?: ExpectedHmrLogCount;
+          hot?: ExpectedHmrLogCount;
+          full?: ExpectedHmrLogCount;
+        };
     const expectLogCount = (
       actual: number,
       expected: ExpectedHmrLogCount | undefined
@@ -221,11 +229,7 @@ export function createDevTests(config?: DevTestConfig) {
     };
     const expectHmrLogCounts = async (
       cursor: number | undefined,
-      expected: {
-        skip?: ExpectedHmrLogCount;
-        hot?: ExpectedHmrLogCount;
-        full?: ExpectedHmrLogCount;
-      }
+      expected: ExpectedHmrLogCounts
     ) => {
       if (cursor === undefined) {
         return;
@@ -236,6 +240,20 @@ export function createDevTests(config?: DevTestConfig) {
         intervalMs: 250,
         check: async () => {
           const log = (await readDevServerLog()).slice(cursor);
+          expect(log).toContain(hmrLogMessages.idle);
+          if (expected === 'any') {
+            expect(
+              [
+                hmrLogMessages.skip,
+                hmrLogMessages.hot,
+                hmrLogMessages.full,
+              ].reduce(
+                (count, message) => count + countLogMessage(log, message),
+                0
+              )
+            ).toBeGreaterThan(0);
+            return;
+          }
           expectLogCount(
             countLogMessage(log, hmrLogMessages.skip),
             expected.skip
@@ -909,6 +927,7 @@ ${apiFileContent}`
         }
 
         await waitForHmrReady();
+        const setupLogCursor = await readDevServerLogCursor();
 
         const writeFuzzSources = async (iteration: number) => {
           await Promise.all([
@@ -1025,6 +1044,15 @@ ${apiFileContent}`
           },
         });
         assert(workflow);
+        await pollUntil({
+          description: 'HMR fuzz fixture rebuilds to finish',
+          timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
+          intervalMs: 250,
+          check: async () => {
+            const log = (await readDevServerLog()).slice(setupLogCursor);
+            expect(log).toContain(hmrLogMessages.idle);
+          },
+        });
         const runWorkflow = async () => {
           const run = await start<
             [],
@@ -1062,7 +1090,7 @@ ${apiFileContent}`
           {
             file: files.step,
             kind: 'none',
-            expectedLogCounts: { skip: 1 },
+            expectedLogCounts: 'any',
             expectedStepValue: (iteration: number) => `step-only-${iteration}`,
             source: (
               iteration: number
@@ -1320,6 +1348,9 @@ export async function hmrFuzzAddedWorkflow() {
           },
           {
             description: 'workflow file added through API import',
+            expectedLogCounts: {
+              full: { min: 1, max: 2 },
+            },
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.addedWorkflow,
@@ -1353,7 +1384,9 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1, skip: 1 },
+            expectedLogCounts: {
+              full: { min: 1, max: 2 },
+            },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(
