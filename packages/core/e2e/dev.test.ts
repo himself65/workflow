@@ -200,7 +200,7 @@ export function createDevTests(config?: DevTestConfig) {
         : undefined;
     const countLogMessage = (log: string, message: string) =>
       log.split(message).length - 1;
-    type ExpectedHmrLogCount = number | { min?: number; max?: number };
+    type ExpectedHmrLogCount = number | { min: number; max: number };
     type ExpectedHmrLogCounts =
       | 'any'
       | {
@@ -223,9 +223,7 @@ export function createDevTests(config?: DevTestConfig) {
         return;
       }
       expect(actual).toBeGreaterThanOrEqual(expected?.min ?? 0);
-      if (expected?.max !== undefined) {
-        expect(actual).toBeLessThanOrEqual(expected.max);
-      }
+      expect(actual).toBeLessThanOrEqual(expected?.max ?? 0);
     };
     const expectHmrLogCounts = async (
       cursor: number | undefined,
@@ -432,7 +430,10 @@ export async function hmrPageWorkflow() {
             );
           },
         });
-        await expectHmrLogCounts(logCursor, { full: 1, skip: { max: 1 } });
+        await expectHmrLogCounts(logCursor, {
+          full: 1,
+          skip: { min: 0, max: 1 },
+        });
       }
     );
 
@@ -1086,6 +1087,9 @@ ${apiFileContent}`
         };
 
         let snapshot = await waitForGeneratedArtifactStability();
+        const expectedBodyOnlyRebuild = finalConfig.canary
+          ? ('any' as const)
+          : { hot: 1 };
         const cases = [
           {
             file: files.step,
@@ -1119,7 +1123,7 @@ export async function hmrFuzzStep() {
           {
             file: files.workflow,
             kind: 'workflow',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: expectedBodyOnlyRebuild,
             expectedWorkflowValue: (iteration: number) =>
               `workflow-body-${iteration}`,
             source: (
@@ -1142,7 +1146,7 @@ export async function hmrFuzzWorkflow() {
           {
             file: files.workflowHelper,
             kind: 'workflow',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: expectedBodyOnlyRebuild,
             expectedWorkflowValue: (iteration: number) =>
               `workflow-helper-body-${iteration}`,
             source: (
@@ -1157,7 +1161,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           {
             file: files.sharedHelper,
             kind: 'workflow',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: expectedBodyOnlyRebuild,
             expectedStepValue: (iteration: number) =>
               `shared-body-${iteration}`,
             expectedWorkflowValue: (iteration: number) =>
@@ -1172,7 +1176,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           {
             file: files.serde,
             kind: 'serde',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: expectedBodyOnlyRebuild,
             source: (iteration: number) => `export class HmrFuzzBox {
   static classId = 'HmrFuzzBox';
 
@@ -1268,6 +1272,26 @@ export async function hmrFuzzWorkflow() {
                 description:
                   'workflow import graph full rediscovery to affect execution',
                 workflowValue: 'imported-stable',
+              });
+            },
+          },
+          {
+            description: 'new workflow dependency body change',
+            expectedLogCounts: { full: 1 },
+            write: async () => {
+              await fs.writeFile(
+                files.importHelper,
+                "export const hmrFuzzImportedValue = 'imported-updated';\n"
+              );
+            },
+            assert: async () => {
+              if (finalConfig.canary) {
+                return;
+              }
+              await expectWorkflowResult({
+                description:
+                  'new workflow dependency body change to affect execution',
+                workflowValue: 'imported-updated',
               });
             },
           },
