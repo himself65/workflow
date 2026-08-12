@@ -10,6 +10,12 @@ Built on [vercel-py](https://github.com/vercel/vercel-py), pinned by commit in
 which is what drags the whole vercel-py workspace out of the checkout instead of
 PyPI. Bump both together, deliberately, and re-run the suite when you do.
 
+**That rev is currently not on vercel-py `main`.** It is a throwaway branch,
+`pin/resilient-start-on-streaming-main` — `main` plus the unmerged
+resilient-start stack, rebased, because the stack predates the streaming API and
+pinning its own head would cost `get_writable()`. `pyproject.toml` has the full
+reasoning next to the pin. Repin to `main` when that stack lands.
+
 ## Running it
 
 ```bash
@@ -235,20 +241,24 @@ fixture. Both axes are ratchets: a claim that stops being true fails the run
 instead of quietly skipping, so growing the file is the only way to move.
 `ConformanceConfig` in `packages/core/e2e/utils.ts` spells out each direction.
 
-Current baseline: **24 passing, 113 skipped, of 137** on `world-local`. The
+Current baseline: **26 passing, 111 skipped, of 137** on `world-local`. The
 Vercel lane collects 19 more tests — `e2e-agent.test.ts`, which it also picks up
 and skips whole — and passes one fewer, because `deploymentId: 'latest' is a
 no-op in non-Vercel worlds` is local by definition. It is one baseline, not two.
 
-Seven of the eight `unsupported` entries are four upstream defects wearing
-different clothes, and they are worth reading together rather than one at a
-time:
+Six entries, five upstream causes — the last one accounts for two — and they are
+worth reading together rather than one at a time:
 
-- Three are the missing run row described below. One is the test that injects it
-  deliberately; the other two are `sleepWinsRaceWorkflow` and
-  `stepWinsRaceWorkflow`, which bound the *elapsed* time of a race and so are
-  the only tests that notice the ~5s the world waits before redelivering a
-  delivery the app 500'd. They return the right winner every time.
+- One is the missing run row described below — and it is down from three,
+  because the pin now carries the resilient-start stack. `sleepWinsRaceWorkflow`
+  and `stepWinsRaceWorkflow` pass on it and are no longer exempt. What is left
+  is the test that injects the missing row deliberately, and it now fails one
+  layer further in: the run *is* bootstrapped from `run_started`, then rejected
+  by its own model, because `RunInput.input` is typed `Any` and the
+  `Uint8Array` envelope the local world's JSON queue wraps `bytes` in is never
+  decoded. A defect in the stack, found by this lane and by nothing else — the
+  Vercel world's CBOR transport carries bytes natively and the stack's unit
+  tests use fakes with no transport.
 - One is `encp`, and it is the only entry exempted for a lane it *passes* on.
   On Vercel the driver resumes a hook as an external client with no symmetric
   run key, so the payload arrives sealed to the run's public key in the X25519
@@ -264,7 +274,8 @@ time:
   `hookTokenReuseLoopWorkflow` does not free a token on `dispose()` in time for
   the same run to reclaim it. Their neighbours passing is what makes each one
   specific — see the reasons in `e2e-conformance.json`.
-- The last is a thrown error losing its identity across the event log, so a
+- The remaining two are one cause: a thrown error losing its identity across the
+  event log, so a
   `FatalError` a step raised arrives at the workflow's `except` as a plain
   `RuntimeError`, and the failed run's `errorCode` is `RuntimeError` rather than
   `USER_ERROR`. The step *lifecycle* is right — `FatalError` burns exactly one
@@ -298,18 +309,24 @@ This app is honest about being early. In rough order of how much it costs:
   events.create fails with 429/5xx, the run was still accepted via the queue."
 
   So a missing run row is a normal state on Vercel, not an error one, and the
-  consumer is required to tolerate it. Three of the five `unsupported` entries
-  are this — but it is not confined to them. Whenever the Python consumer wins
-  the parallel race, whichever run drew the short straw dies with
+  consumer is required to tolerate it. **The pin now carries the fix** —
+  vercel-py #282–#284, rebased; see the note at the top of this file — so this
+  is mostly historical, and the numbers it used to cost are the reason the pin
+  is worth its awkwardness. Before it: whenever the Python consumer won the
+  parallel race, whichever run drew the short straw died with
   `WorkflowWorldError: workflow run … not found`; on the Vercel lane the queue
-  does not redeliver and the test times out, costing roughly one arbitrary run
+  does not redeliver and the test timed out, costing roughly one arbitrary run
   per suite, on a different fixture each time, which makes it look like
-  flakiness and is not.
+  flakiness and is not. `world-local` *does* redeliver, ~5s later, which is why
+  the local lane tolerated it for as long as every ported fixture only had a
+  lower bound on its own duration — the two race fixtures have an upper one, and
+  they failed about half of all runs until the pin moved.
 
-  `world-local` *does* redeliver, ~5s later, which is why the local lane
-  tolerated this for as long as every ported fixture only had a lower bound on
-  its own duration. The two race fixtures have an upper one, so they are where
-  the local lane finally sees it. It needs `runInput` honoured upstream.
+  One `unsupported` entry survives the fix, and it is a defect in the fix:
+  `RunInput.input` is typed `Any`, so the `Uint8Array` envelope the local
+  world's JSON queue transport wraps `bytes` in reaches
+  `NonFinalWorkflowRun.input`, which wants `bytes | str`. Only this lane can see
+  it.
 - **The `.well-known/workflow/v1` surface lives in `app.py`, not the SDK**, and
   reaching it needs two `vercel._internal` imports (`workflow_entrypoint` and the
   `HTTPRequest` base), neither of which has a public equivalent. The module

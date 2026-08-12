@@ -24,6 +24,21 @@ dependencies = [
 # Python SDK's `main` so the conformance suite reports on what is actually
 # being built. Bump `rev` deliberately, and re-run the suite when you do.
 #
+# **This rev is not on `main`.** It is `pin/resilient-start-on-streaming-main`,
+# a throwaway branch on vercel-py: `main` at 5c77acb with vercel-py #282/#283/
+# #284 (the resilient-start stack) cherry-picked on top. The stack itself was
+# written against 02173de, *before* the streaming API, so pinning its own head
+# would take `get_writable()` away and break three stream fixtures — hence the
+# rebase. The one cherry-pick conflict was `_events_create_impl`'s id minting,
+# resolved toward main's `self._new_id(...)` helper.
+#
+# Repin to plain `main` the moment that stack merges. Until then this is the
+# thing to check first if the SDK behaves unlike its published source. What the
+# rebase buys, measured: `sleepWinsRaceWorkflow` and `stepWinsRaceWorkflow` stop
+# failing ~half of all runs, because the run's first delivery no longer 500s on
+# a run row that has not landed yet and no longer costs the ~5s the world waits
+# before redelivering. Two `unsupported` entries came out with it.
+#
 # `subdirectory` is required — the vercel-py repo root is a uv workspace whose
 # build backend raises, so only the leaf packages are installable on their own.
 #
@@ -57,8 +72,8 @@ dependencies = [
 #     builder then reject under `--locked`. `uv run` re-locks too, which is why
 #     the `dev` script passes it as well.
 [tool.uv.sources]
-vercel = { git = "https://github.com/vercel/vercel-py", rev = "5c77acb7ace2c106b58b782df41d8af79e4e10d6", subdirectory = "src/vercel" }
-vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "5c77acb7ace2c106b58b782df41d8af79e4e10d6", subdirectory = "src/vercel-queue" }
+vercel = { git = "https://github.com/vercel/vercel-py", rev = "4b70f100dd42345c30f50dea1e5b425cc4ea3dbb", subdirectory = "src/vercel" }
+vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "4b70f100dd42345c30f50dea1e5b425cc4ea3dbb", subdirectory = "src/vercel-queue" }
 
 # How `@vercel/python` builds this app. Reached only because `vercel.json`
 # declares `pyproject.toml` as the build src, which puts the builder in
