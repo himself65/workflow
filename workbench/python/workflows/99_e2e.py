@@ -23,6 +23,7 @@ that list is skipped by the suite. Only add a name there once its test passes.
 """
 
 import asyncio
+import dataclasses
 import json
 import random
 import re
@@ -30,6 +31,7 @@ import time
 from typing import Any, Awaitable, TypeVar
 
 from vercel.workflow import (
+    BaseHook,
     FatalError,
     Run,
     WorkflowWritable,
@@ -627,3 +629,148 @@ async def spawnWorkflowFromStepWorkflow(inputValue: int) -> dict:
         "childRunId": childRunId,
         "childResult": childResult,
     }
+
+
+##########################################################
+# hookWithSleepWorkflow — 99_e2e.ts:2960
+# hookWithSleepFinalStepWorkflow — 99_e2e.ts:2995
+# hookTokenReuseLoopWorkflow — 99_e2e.ts:990
+# sleepWithSequentialStepsWorkflow — 99_e2e.ts:3071
+#
+# The four fixtures in the TypeScript file's hook/sleep-interaction cluster,
+# and the first hooks on this side. The bucket they used to sit in was labelled
+# "vercel-py's `BaseHook.wait()` has a different shape than the async-iterable
+# the fixtures use", which turns out to be wrong: `HookEvent` implements both
+# `__await__` (one payload) and `__aiter__` / `__anext__` (a stream of them), so
+# `for await (const p of hook)` ports to `async for payload in hook` directly.
+#
+# What is really different is the payload type. `Hook.set_result` requires the
+# class handed to `wait()` to be a dataclass or a pydantic model, and calls
+# `hook_cls(**raw)` on the plain JSON the resumer sent — so the port is a
+# dataclass with a default per optional field, and the fixture's structural
+# type becomes a declared one. The declaration has to stay loose in the same
+# places the TypeScript type is optional: the driver resumes with `{type, id}`
+# on one payload and `{type, done}` on another, and a required field would
+# raise on whichever call omitted it.
+#
+# Three translation traps, each of which cost a debugging round here:
+#
+# - **`using hook` is not `try/finally`.** A Python workflow body unwinds
+#   through a `_SuspendException` on *every* suspension, so a `finally` around
+#   an `await` runs once per turn rather than once at scope exit. Disposing a
+#   hook there deletes the suspension before the orchestrator can flush its
+#   `hook_created`, and the run stalls with no hook for the driver to resume.
+#   Dispose on the normal path only.
+# - **`void sleep('1d')`** is `asyncio.ensure_future(sleep("1d"))`. The wait is
+#   created and never completes; the body returns first and the orphaned task
+#   is cancelled with the loop.
+# - **A step takes the payload as a dict**, not as the dataclass: keeping the
+#   step signature `dict` avoids registering a serializer for a type that only
+#   exists to satisfy `set_result`.
+#
+# `sleepWithSequentialStepsWorkflow` is the cluster's control and has no hook in
+# it at all — a fire-and-forget sleep plus three sequential steps. It is ported
+# here rather than with the other sleep fixtures because its whole purpose is to
+# be read next to the two above: it passes, which is what makes their failures
+# specific to hooks rather than to a pending wait.
+#
+# Two of the four are under `unsupported`, and both look like real orchestrator
+# defects rather than missing API — see `../e2e-conformance.json` for what was
+# observed.
+
+
+@dataclasses.dataclass
+class SleepHookPayload(BaseHook):
+    type: str
+    id: int | None = None
+    done: bool | None = None
+
+
+@app.step
+async def processPayload(payload: dict) -> dict:
+    return {"processed": True, "type": payload["type"], "id": payload.get("id")}
+
+
+@app.workflow
+async def hookWithSleepWorkflow(token: str) -> list:
+    hook = SleepHookPayload.wait(token=token)
+
+    # Concurrent sleep that won't complete during the test
+    asyncio.ensure_future(sleep("1d"))
+
+    results = []
+    async for payload in hook:
+        results.append(await processPayload(dataclasses.asdict(payload)))
+        if payload.done:
+            break
+
+    hook.dispose()
+    return results
+
+
+@app.workflow
+async def hookWithSleepFinalStepWorkflow(token: str) -> dict:
+    hook = SleepHookPayload.wait(token=token)
+    asyncio.ensure_future(sleep("1d"))
+
+    seen = []
+    finalResult = None
+    async for payload in hook:
+        if payload.id is not None:
+            seen.append(payload.id)
+        if payload.done:
+            finalResult = await processPayload(dataclasses.asdict(payload))
+            break
+
+    hook.dispose()
+    return {"seen": seen, "finalResult": finalResult}
+
+
+@dataclasses.dataclass
+class ReuseHookPayload(BaseHook):
+    message: str
+
+
+@app.workflow
+async def hookTokenReuseLoopWorkflow(token: str, rounds: int) -> dict:
+    received = []
+    for round in range(rounds):
+        hook = ReuseHookPayload.wait(token=token)
+
+        # `hook.getConflict()` has no Python equivalent. A conflict is still
+        # observable, just later and as an exception: `HookConflictEvent`
+        # resolves the hook's future with a `RuntimeError`, so the same two
+        # outcomes come out of one `await` instead of two.
+        try:
+            payload = await hook
+        except RuntimeError as e:
+            if "already in use" not in str(e):
+                raise
+            return {"received": received, "conflictRound": round}
+
+        received.append(payload.message)
+        hook.dispose()
+
+    return {"received": received, "conflictRound": None}
+
+
+@app.step
+async def addNumbers(a: int, b: int) -> int:
+    return a + b
+
+
+@app.workflow
+async def sleepWithSequentialStepsWorkflow() -> dict:
+    shouldCancel = False
+
+    async def _cancelAfterSleep() -> None:
+        nonlocal shouldCancel
+        await sleep("1d")
+        shouldCancel = True
+
+    asyncio.ensure_future(_cancelAfterSleep())
+
+    a = await addNumbers(1, 2)
+    b = await addNumbers(a, 3)
+    c = await addNumbers(b, 4)
+    return {"a": a, "b": b, "c": c, "shouldCancel": shouldCancel}

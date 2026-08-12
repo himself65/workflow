@@ -235,12 +235,12 @@ fixture. Both axes are ratchets: a claim that stops being true fails the run
 instead of quietly skipping, so growing the file is the only way to move.
 `ConformanceConfig` in `packages/core/e2e/utils.ts` spells out each direction.
 
-Current baseline: **23 passing, 114 skipped, of 137** on `world-local`. The
+Current baseline: **25 passing, 112 skipped, of 137** on `world-local`. The
 Vercel lane collects 19 more tests — `e2e-agent.test.ts`, which it also picks up
 and skips whole — and passes one fewer, because `deploymentId: 'latest' is a
 no-op in non-Vercel worlds` is local by definition. It is one baseline, not two.
 
-Four of the five `unsupported` entries are the same upstream defect wearing
+Six of the seven `unsupported` entries are three upstream defects wearing
 different clothes, and they are worth reading together rather than one at a
 time:
 
@@ -249,7 +249,13 @@ time:
   `stepWinsRaceWorkflow`, which bound the *elapsed* time of a race and so are
   the only tests that notice the ~5s the world waits before redelivering a
   delivery the app 500'd. They return the right winner every time.
-- The fourth is a thrown error losing its identity across the event log, so a
+- Two are the hook fixtures below, and they are the only entries here found *by*
+  the suite rather than predicted before it ran: `hookWithSleepWorkflow` stalls
+  on the transition from a delivered hook payload into a new step, and
+  `hookTokenReuseLoopWorkflow` does not free a token on `dispose()` in time for
+  the same run to reclaim it. Their neighbours passing is what makes each one
+  specific — see the reasons in `e2e-conformance.json`.
+- The last is a thrown error losing its identity across the event log, so a
   `FatalError` a step raised arrives at the workflow's `except` as a plain
   `RuntimeError`, and the failed run's `errorCode` is `RuntimeError` rather than
   `USER_ERROR`. The step *lifecycle* is right — `FatalError` burns exactly one
@@ -259,12 +265,15 @@ time:
 
 This app is honest about being early. In rough order of how much it costs:
 
-- **Most fixtures are still not ported** — roughly 45 tests across 38 fixtures.
+- **Most fixtures are still not ported** — roughly 43 tests across 34 fixtures.
   Every one of them is now blocked on a named API rather than on porting effort,
-  which was not true before: hooks are the largest block by far (19 tests, where
-  vercel-py's `BaseHook.wait()` returns one typed event and the fixtures iterate
-  a hook as an async stream of plain-JSON payloads — a shape difference, not a
-  missing function), then `setAttributes` (9, no Python equivalent at all, and
+  which was not true before. Hooks are still the largest block (15 tests), but
+  not for the reason this file used to give: `HookEvent` implements
+  `__aiter__`/`__anext__`, so `for await (const p of hook)` ports directly, and
+  four hook-cluster fixtures are now in. What the rest need is `metadata` on
+  `BaseHook.wait()` (the wire model `HookCreatedEventData` already carries the
+  field; only the authoring API cannot fill it) and a `getConflict()`
+  equivalent. Then `setAttributes` (9, no Python equivalent at all, and
   spec version 4, which Python does not claim), distributed abort (3),
   `getWorkflowMetadata` (1), `RetryableError` (1), a `ReadableStream` returned
   from a step (1), `fetch` from a workflow body (1, which the Python sandbox
