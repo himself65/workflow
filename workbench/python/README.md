@@ -211,8 +211,13 @@ Reading is all this app needs. Python still writes plain `devl`, and the
 TypeScript reader passes non-`encr` payloads through untouched
 (`maybeDecrypt`, `packages/core/src/serialization/encryption.ts:284`), so the
 two sides interoperate without Python ever encrypting anything. `encp`, the
-X25519 sealed-box format one run uses to write to another, is still reported as
-unsupported; nothing in the suite produces one.
+X25519 sealed-box format, is still reported as unsupported — and this used to
+add "nothing in the suite produces one", which stopped being true the moment a
+hook fixture reached this lane. It is not only the format one run uses to write
+to another: it is what *every* hook payload arrives as here, because the driver
+resumes from outside the run with no symmetric key, so the payload is sealed to
+the run's public key instead. See the `unsupported` entry for
+`hookWithSleepFinalStepWorkflow`.
 
 Again `world-local` is exempt — no deployment key, nothing to derive from, so
 the local lane could never have caught this. It is the clearest case so far of
