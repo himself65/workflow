@@ -36,6 +36,7 @@ const BASE = {
   suspensionHasWaits: false,
   suspensionCreatedHooks: false,
   turbo: false,
+  mode: 'replay' as const,
 };
 
 describe('computeStepLatencyTracking', () => {
@@ -194,8 +195,20 @@ describe('computeStepLatencyTracking', () => {
       preStepBlockingMs: 0,
       rsfsAnchorMs: 1_100,
       replayMs: 25,
+      mode: 'replay',
       turbo: false,
     });
+  });
+
+  it('threads mode through unchanged when the caller reports a retained resume', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [makeEvent('run_created'), makeEvent('run_started')],
+      runStartedReceivedAtMs: 1_100,
+      replayMs: 25,
+      mode: 'retained',
+    });
+    expect(tracking?.mode).toBe('retained');
   });
 
   it('does not mark RSFS when runStartedReceivedAtMs is unrecoverable, even though TTFS qualifies', () => {
@@ -460,6 +473,7 @@ describe('computeStepLatencyEventData', () => {
         rsfsAnchorMs: 1_200,
         replayMs: 15,
         turbo: false,
+        mode: 'replay',
       },
       stepCodeStartedAtMs: 2_000,
       stepStartPostSentAtMs: 1_950,
@@ -471,6 +485,7 @@ describe('computeStepLatencyEventData', () => {
       ttfs: 1_000,
       rsfs: 750,
       finalSchedulingReplay: 15,
+      replayMode: 'replay',
       optimizations: ['lazyStepStart'],
     });
   });
@@ -483,6 +498,7 @@ describe('computeStepLatencyEventData', () => {
         rsfsAnchorMs: 1_200,
         replayMs: 15,
         turbo: false,
+        mode: 'retained',
       },
       stepCodeStartedAtMs: 2_000,
       stepStartPostSentAtMs: undefined,
@@ -493,6 +509,7 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 1_000,
       finalSchedulingReplay: 15,
+      replayMode: 'retained',
       optimizations: ['lazyStepStart'],
     });
   });
@@ -505,6 +522,7 @@ describe('computeStepLatencyEventData', () => {
         rsfsAnchorMs: 5_000,
         replayMs: 10,
         turbo: false,
+        mode: 'replay',
       },
       stepCodeStartedAtMs: 2_000,
       stepStartPostSentAtMs: 4_000,
@@ -516,6 +534,7 @@ describe('computeStepLatencyEventData', () => {
       ttfs: 1_000,
       rsfs: 0,
       finalSchedulingReplay: 10,
+      replayMode: 'replay',
       optimizations: ['lazyStepStart'],
     });
   });

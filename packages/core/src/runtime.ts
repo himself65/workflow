@@ -2507,6 +2507,13 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
+                    // Which path actually produced this suspension's replay
+                    // work: set right after the resume/replay decision below,
+                    // before `retainedSession` is reassigned for the *next*
+                    // iteration — reading `retainedSession` directly in the
+                    // catch block would reflect the next iteration's starting
+                    // state, not what happened in this one.
+                    let replaySessionMode: 'replay' | 'retained' = 'replay';
                     try {
                       // --- QuickJS VM engine dispatch ---
                       // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs
@@ -2844,6 +2851,16 @@ export function workflowEntrypoint(
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
+                      // Capture before `retainedSession` is reassigned below:
+                      // a retained resume can itself report back `{ type:
+                      // 'replay' }` (internal cache miss), in which case this
+                      // attempt is a full replay despite having a retained
+                      // session to start from.
+                      replaySessionMode =
+                        retainedSession !== null &&
+                        workflowResult.type !== 'replay'
+                          ? 'retained'
+                          : 'replay';
 
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
@@ -3680,6 +3697,7 @@ export function workflowEntrypoint(
                           suspensionCreatedHooks:
                             err.hookCount > 0 || suspensionResult.hasHookEvents,
                           turbo,
+                          mode: replaySessionMode,
                         });
 
                         // Precondition-guard snapshot for the inline

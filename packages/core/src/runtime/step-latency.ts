@@ -88,6 +88,12 @@ export interface StepLatencyTracking {
    * window, this covers only the last pass.
    */
   replayMs?: number;
+  /**
+   * Whether `replayMs` measured a retained VM session resume ('retained') or
+   * a full workflow-function replay from the event log ('replay'). Present
+   * only alongside `replayMs`.
+   */
+  mode?: 'replay' | 'retained';
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
 }
@@ -117,6 +123,12 @@ export interface StepLatencyEventData {
    * read as "the replay portion of `rsfs`".
    */
   finalSchedulingReplay?: number;
+  /**
+   * Whether `finalSchedulingReplay` measured a retained-session resume or a
+   * full replay from the event log — see {@link StepLatencyTracking.mode}.
+   * Present whenever `finalSchedulingReplay` is.
+   */
+  replayMode?: 'replay' | 'retained';
   optimizations?: string[];
 }
 
@@ -215,6 +227,8 @@ export function computeStepLatencyTracking(params: {
   suspensionCreatedHooks: boolean;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
+  /** See {@link StepLatencyTracking.mode}. */
+  mode: 'replay' | 'retained';
 }): StepLatencyTracking | undefined {
   const { events } = params;
 
@@ -295,6 +309,7 @@ export function computeStepLatencyTracking(params: {
       ? {
           rsfsAnchorMs: params.runStartedReceivedAtMs,
           replayMs: params.replayMs,
+          mode: params.mode,
         }
       : {}),
     ...(prevStepEndMs !== undefined
@@ -407,7 +422,9 @@ export function computeStepLatencyEventData(params: {
       ? { eventCount: tracking.eventCount }
       : {}),
     ...(rsfs !== undefined ? { rsfs } : {}),
-    ...(finalSchedulingReplay !== undefined ? { finalSchedulingReplay } : {}),
+    ...(finalSchedulingReplay !== undefined
+      ? { finalSchedulingReplay, replayMode: tracking.mode }
+      : {}),
     optimizations,
   };
 }
