@@ -48,6 +48,8 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -61,6 +63,8 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
+      replayMs: 0,
+      mode: 'replay',
       turbo: true,
     });
   });
@@ -89,6 +93,8 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 42,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -113,6 +119,8 @@ describe('computeStepLatencyTracking', () => {
       preStepBlockingMs: 0,
       // Earliest attr write wins; occurredAt preferred over createdAt.
       preStepAttrStartMs: 3_000,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -134,6 +142,8 @@ describe('computeStepLatencyTracking', () => {
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 40,
       preStepAttrStartMs: 3_000,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -152,6 +162,8 @@ describe('computeStepLatencyTracking', () => {
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
       preStepAttrStartMs: 3_000,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -218,9 +230,13 @@ describe('computeStepLatencyTracking', () => {
       runStartedReceivedAtMs: undefined,
       replayMs: 25,
     });
+    // replayMs/mode are unconditional (not gated on rsfsEligible) — present
+    // even though rsfsAnchorMs itself is not.
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
+      replayMs: 25,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -253,6 +269,8 @@ describe('computeStepLatencyTracking', () => {
       prevStepEndMs: 4_500,
       stepCount: 1,
       eventCount: 3,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -266,6 +284,8 @@ describe('computeStepLatencyTracking', () => {
       prevStepEndMs: 5_000,
       stepCount: 1,
       eventCount: 1,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -284,6 +304,8 @@ describe('computeStepLatencyTracking', () => {
       prevStepEndMs: new Date('2024-01-01T00:00:00.000Z').getTime(),
       stepCount: 2,
       eventCount: 3,
+      replayMs: 0,
+      mode: 'replay',
       turbo: false,
     });
   });
@@ -369,6 +391,32 @@ describe('computeStepLatencyEventData', () => {
       stso: 500,
       stepCount: 7,
       eventCount: 42,
+      optimizations: ['lazyStepStart'],
+    });
+  });
+
+  it('reports finalSchedulingReplay/replayMode for an STSO (non-first-step) batch too, not just RSFS', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        prevStepEndMs: 1_500,
+        stepCount: 7,
+        eventCount: 42,
+        replayMs: 33,
+        mode: 'retained',
+        turbo: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
+      attempt: 1,
+      lazyStepStart: true,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      stso: 500,
+      stepCount: 7,
+      eventCount: 42,
+      finalSchedulingReplay: 33,
+      replayMode: 'retained',
       optimizations: ['lazyStepStart'],
     });
   });

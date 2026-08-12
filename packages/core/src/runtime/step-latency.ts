@@ -75,23 +75,27 @@ export interface StepLatencyTracking {
    * Wall-clock ms this invocation's synchronous workflow-function replay
    * took: from calling `runWorkflow` to it throwing the suspension that
    * scheduled this batch. Excludes awaited network I/O (the suspension's
-   * event commits, the step's own start POST). Present only alongside
-   * `rsfsAnchorMs`.
+   * event commits, the step's own start POST). Present whenever the batch
+   * qualifies for TTFS or STSO — not just the first-step (RSFS) case.
    *
    * This is the FINAL replay pass only — the invocation that reached and
-   * scheduled the first step. Valid RSFS paths can replay more than once
+   * scheduled this batch. Valid RSFS paths can replay more than once
    * before the first step (e.g. a workflow-body `setAttributes()` detour
    * replays twice), and a redelivery omits earlier invocations' replay work
    * entirely; this value is not accumulated across those earlier passes.
    * Do not read it as "the replay portion of RSFS" — RSFS
    * ({@link rsfsAnchorMs}) covers the whole run_started-to-first-step
-   * window, this covers only the last pass.
+   * window, this covers only the last pass. For an STSO-eligible (non-first)
+   * batch there is no RSFS window to compare against; this is simply the
+   * cost of the replay pass that scheduled the batch.
    */
   replayMs?: number;
   /**
-   * Whether `replayMs` measured a retained VM session resume ('retained') or
-   * a full workflow-function replay from the event log ('replay'). Present
-   * only alongside `replayMs`.
+   * Whether this batch's suspension was reached via a retained VM session
+   * resume ('retained') or a full workflow-function replay from the event
+   * log ('replay'). Always present alongside {@link replayMs} — the two are
+   * reported together so a backend can split replay-cost telemetry by mode
+   * without an extra join.
    */
   mode?: 'replay' | 'retained';
   /** Whether turbo mode is active for this invocation. */
@@ -118,9 +122,9 @@ export interface StepLatencyEventData {
   rsfs?: number;
   /**
    * Client-measured wall-clock ms of the FINAL replay pass that scheduled
-   * the first step (see {@link StepLatencyTracking.replayMs}) — not
-   * accumulated across earlier pre-first-step passes, so it must not be
-   * read as "the replay portion of `rsfs`".
+   * this batch (see {@link StepLatencyTracking.replayMs}) — not accumulated
+   * across earlier passes, so for the first-step case it must not be read as
+   * "the replay portion of `rsfs`". Present whenever `ttfs` or `stso` is.
    */
   finalSchedulingReplay?: number;
   /**
@@ -308,13 +312,16 @@ export function computeStepLatencyTracking(params: {
     ...(rsfsEligible
       ? {
           rsfsAnchorMs: params.runStartedReceivedAtMs,
-          replayMs: params.replayMs,
-          mode: params.mode,
         }
       : {}),
     ...(prevStepEndMs !== undefined
       ? { prevStepEndMs, stepCount, eventCount }
       : {}),
+    // Unconditional (not gated on rsfsEligible): the replay-cost/mode pair is
+    // meaningful for any batch this function returns tracking for, not just
+    // the first-step (RSFS) case — see StepLatencyTracking.replayMs.
+    replayMs: params.replayMs,
+    mode: params.mode,
     turbo: params.turbo,
   };
 }
