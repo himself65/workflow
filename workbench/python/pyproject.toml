@@ -57,8 +57,8 @@ dependencies = [
 #     builder then reject under `--locked`. `uv run` re-locks too, which is why
 #     the `dev` script passes it as well.
 [tool.uv.sources]
-vercel = { git = "https://github.com/vercel/vercel-py", rev = "02173de39c4146611176fd9e8197a85f9f2d7124", subdirectory = "src/vercel" }
-vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "02173de39c4146611176fd9e8197a85f9f2d7124", subdirectory = "src/vercel-queue" }
+vercel = { git = "https://github.com/vercel/vercel-py", rev = "5c77acb7ace2c106b58b782df41d8af79e4e10d6", subdirectory = "src/vercel" }
+vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "5c77acb7ace2c106b58b782df41d8af79e4e10d6", subdirectory = "src/vercel-queue" }
 
 # How `@vercel/python` builds this app. Reached only because `vercel.json`
 # declares `pyproject.toml` as the build src, which puts the builder in
