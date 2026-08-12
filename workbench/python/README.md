@@ -235,12 +235,12 @@ fixture. Both axes are ratchets: a claim that stops being true fails the run
 instead of quietly skipping, so growing the file is the only way to move.
 `ConformanceConfig` in `packages/core/e2e/utils.ts` spells out each direction.
 
-Current baseline: **25 passing, 112 skipped, of 137** on `world-local`. The
+Current baseline: **24 passing, 113 skipped, of 137** on `world-local`. The
 Vercel lane collects 19 more tests — `e2e-agent.test.ts`, which it also picks up
 and skips whole — and passes one fewer, because `deploymentId: 'latest' is a
 no-op in non-Vercel worlds` is local by definition. It is one baseline, not two.
 
-Six of the seven `unsupported` entries are three upstream defects wearing
+Seven of the eight `unsupported` entries are four upstream defects wearing
 different clothes, and they are worth reading together rather than one at a
 time:
 
@@ -249,6 +249,15 @@ time:
   `stepWinsRaceWorkflow`, which bound the *elapsed* time of a race and so are
   the only tests that notice the ~5s the world waits before redelivering a
   delivery the app 500'd. They return the right winner every time.
+- One is `encp`, and it is the only entry exempted for a lane it *passes* on.
+  On Vercel the driver resumes a hook as an external client with no symmetric
+  run key, so the payload arrives sealed to the run's public key in the X25519
+  `encp` format, which vercel-py does not read — the run fails on its first
+  payload. `world-local` never encrypts, so the same test passes here.
+  `unsupported` is not lane-aware, so exempting it costs the local signal; the
+  alternative was leaving the Vercel lane red. This is what the note further up
+  about `encp` being "reported as unsupported; nothing in the suite produces
+  one" was waiting for — something now does, and it is every hook fixture.
 - Two are the hook fixtures below, and they are the only entries here found *by*
   the suite rather than predicted before it ran: `hookWithSleepWorkflow` stalls
   on the transition from a delivered hook payload into a new step, and
