@@ -155,6 +155,10 @@ interface SplitEventData {
      *  pass within the rsfs window — not accumulated across earlier
      *  pre-first-step passes, so it is not "the replay portion of rsfs". */
     finalSchedulingReplay?: number;
+    /** Whether `finalSchedulingReplay` measured a retained-session resume or
+     *  a full replay from the event log. Present whenever
+     *  `finalSchedulingReplay` is. */
+    replayMode?: 'replay' | 'retained';
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
   };
@@ -195,6 +199,7 @@ type MetaSourceField =
   | 'eventCount'
   | 'rsfs'
   | 'finalSchedulingReplay'
+  | 'replayMode'
   | 'optimizations';
 
 /**
@@ -374,6 +379,12 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.finalSchedulingReplay === 'number') {
     meta.finalSchedulingReplay = eventData.finalSchedulingReplay;
+  }
+  if (
+    eventData.replayMode === 'replay' ||
+    eventData.replayMode === 'retained'
+  ) {
+    meta.replayMode = eventData.replayMode;
   }
   if (
     Array.isArray(eventData.optimizations) &&

@@ -3018,9 +3018,13 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       'lazyStepStart',
       'optimisticStart',
     ]);
-    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
+    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility),
+    // but finalSchedulingReplay/replayMode are unconditional — reported for
+    // any batch STSO is, not just the run's first step.
     expect(second.eventData.rsfs).toBeUndefined();
-    expect(second.eventData.finalSchedulingReplay).toBeUndefined();
+    expect(second.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
+    expect(second.eventData.finalSchedulingReplay).toBeLessThanOrEqual(elapsed);
+    expect(second.eventData.replayMode).toBe('retained');
   });
 
   it('anchors ttfs correctly for a region-tagged run ID (tag bit cleared, not a future timestamp)', async () => {

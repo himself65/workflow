@@ -206,11 +206,14 @@ interface CreateEventV4InputBase {
    *  latency metrics. */
   rsfs?: number;
   /** Client-measured synchronous replay-compute ms of only the FINAL replay
-   *  pass within the rsfs window (the pass that scheduled the first step),
-   *  excluding awaited network I/O — not accumulated across earlier
-   *  pre-first-step passes, so it is not "the replay portion of rsfs".
-   *  Only present alongside rsfs, and only for the run's first step. */
+   *  pass that scheduled this batch, excluding awaited network I/O — not
+   *  accumulated across earlier passes. Present whenever ttfs or stso is
+   *  (not just the run's first step). */
   finalSchedulingReplay?: number;
+  /** Whether `finalSchedulingReplay` measured a retained-session resume or a
+   *  full replay from the event log. Present whenever finalSchedulingReplay
+   *  is. */
+  replayMode?: 'replay' | 'retained';
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
@@ -457,6 +460,9 @@ function buildPostFrameMeta(
   if (input.rsfs !== undefined) meta.rsfs = input.rsfs;
   if (input.finalSchedulingReplay !== undefined) {
     meta.finalSchedulingReplay = input.finalSchedulingReplay;
+  }
+  if (input.replayMode !== undefined) {
+    meta.replayMode = input.replayMode;
   }
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
