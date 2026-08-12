@@ -14,13 +14,17 @@ PyPI. Bump both together, deliberately, and re-run the suite when you do.
 
 ```bash
 cd workbench/python
-uv sync --locked
+uv sync --locked --no-config
 WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev     # uvicorn on :3000
 ```
 
 Both of those guard the lock against your personal `~/.config/uv/uv.toml`
 (`--locked` refuses to rewrite it, and `pnpm dev` passes `--no-config` to
-`uv run`, which re-locks on startup otherwise). If you find an `[options]` block
+`uv run`, which re-locks on startup otherwise). CI runs the same sync *without*
+`--no-config`, deliberately — there is no personal config there, so a lock
+carrying an `[options]` block someone's config baked in has to fail the job
+rather than be tolerated. Locally you need the flag on both commands, or
+`--locked` refuses a lock it would otherwise accept. If you find an `[options]` block
 at the top of `uv.lock`, something ran uv without one of them and CI will reject
 the result — the note above `[tool.uv.sources]` in `pyproject.toml` has the rest,
 including how to bump the pin.
@@ -231,23 +235,42 @@ fixture. Both axes are ratchets: a claim that stops being true fails the run
 instead of quietly skipping, so growing the file is the only way to move.
 `ConformanceConfig` in `packages/core/e2e/utils.ts` spells out each direction.
 
-Current baseline: **8 passing, 129 skipped, of 137** on `world-local`, and
-**7 of 156** on Vercel. It is one baseline, not two — the extra 19 collected on
-Vercel are `e2e-agent.test.ts`, which that lane also picks up and skips whole,
-and the eighth pass is `deploymentId: 'latest' is a no-op in non-Vercel worlds`,
-which is local by definition.
+Current baseline: **23 passing, 114 skipped, of 137** on `world-local`. The
+Vercel lane collects 19 more tests — `e2e-agent.test.ts`, which it also picks up
+and skips whole — and passes one fewer, because `deploymentId: 'latest' is a
+no-op in non-Vercel worlds` is local by definition. It is one baseline, not two.
+
+Four of the five `unsupported` entries are the same upstream defect wearing
+different clothes, and they are worth reading together rather than one at a
+time:
+
+- Three are the missing run row described below. One is the test that injects it
+  deliberately; the other two are `sleepWinsRaceWorkflow` and
+  `stepWinsRaceWorkflow`, which bound the *elapsed* time of a race and so are
+  the only tests that notice the ~5s the world waits before redelivering a
+  delivery the app 500'd. They return the right winner every time.
+- The fourth is a thrown error losing its identity across the event log, so a
+  `FatalError` a step raised arrives at the workflow's `except` as a plain
+  `RuntimeError`, and the failed run's `errorCode` is `RuntimeError` rather than
+  `USER_ERROR`. The step *lifecycle* is right — `FatalError` burns exactly one
+  attempt, which is what `errorRetryFatal` was ported to check.
 
 ## What is missing
 
 This app is honest about being early. In rough order of how much it costs:
 
-- **Most fixtures are simply not ported yet** — 66 tests across 52 fixtures.
-  They are not blocked on one thing anymore: the largest blocks are hooks (19
-  tests, where vercel-py's `BaseHook.wait()` has a different shape than the
-  async-iterable hook the fixtures use), streams (11), `setAttributes` (9, no
-  Python equivalent), and `FatalError` / `RetryableError` (7, not exported by
-  `vercel.workflow.errors`).
-- **A run whose row is not readable yet never starts.** `runtime.py:569` reads
+- **Most fixtures are still not ported** — roughly 45 tests across 38 fixtures.
+  Every one of them is now blocked on a named API rather than on porting effort,
+  which was not true before: hooks are the largest block by far (19 tests, where
+  vercel-py's `BaseHook.wait()` returns one typed event and the fixtures iterate
+  a hook as an async stream of plain-JSON payloads — a shape difference, not a
+  missing function), then `setAttributes` (9, no Python equivalent at all, and
+  spec version 4, which Python does not claim), distributed abort (3),
+  `getWorkflowMetadata` (1), `RetryableError` (1), a `ReadableStream` returned
+  from a step (1), `fetch` from a workflow body (1, which the Python sandbox
+  denies by design), and `start()` called from a workflow body rather than a
+  step (2, same reason).
+- **A run whose row is not readable yet never starts.** `runtime.py:766` reads
   the run with `world.runs_get` before replaying and 500s when it is absent,
   where the TypeScript runtime bootstraps from `run_started` using the
   `runInput` the queue message already carries — input, deployment id, workflow
@@ -257,14 +280,18 @@ This app is honest about being early. In rough order of how much it costs:
   events.create fails with 429/5xx, the run was still accepted via the queue."
 
   So a missing run row is a normal state on Vercel, not an error one, and the
-  consumer is required to tolerate it. This is the one test recorded under
-  `unsupported` — but it is not confined to that test. Whenever the Python
-  consumer wins the parallel race, whichever run drew the short straw dies with
-  `WorkflowWorldError: workflow run … not found`, the queue does not redeliver,
-  and the test times out. On the Vercel lane that has been costing roughly one
-  arbitrary run per suite; the fixture it lands on differs run to run, which
-  makes it look like flakiness and is not. It needs `runInput` honoured
-  upstream.
+  consumer is required to tolerate it. Three of the five `unsupported` entries
+  are this — but it is not confined to them. Whenever the Python consumer wins
+  the parallel race, whichever run drew the short straw dies with
+  `WorkflowWorldError: workflow run … not found`; on the Vercel lane the queue
+  does not redeliver and the test times out, costing roughly one arbitrary run
+  per suite, on a different fixture each time, which makes it look like
+  flakiness and is not.
+
+  `world-local` *does* redeliver, ~5s later, which is why the local lane
+  tolerated this for as long as every ported fixture only had a lower bound on
+  its own duration. The two race fixtures have an upper one, so they are where
+  the local lane finally sees it. It needs `runInput` honoured upstream.
 - **The `.well-known/workflow/v1` surface lives in `app.py`, not the SDK**, and
   reaching it needs two `vercel._internal` imports (`workflow_entrypoint` and the
   `HTTPRequest` base), neither of which has a public equivalent. The module

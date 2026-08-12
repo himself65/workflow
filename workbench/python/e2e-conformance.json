@@ -10,13 +10,31 @@
   "language": "python",
   "fixtures": [
     "addTenWorkflow",
+    "errorFatalCatchable",
+    "errorRetryDisabled",
+    "errorRetryFatal",
+    "errorRetrySuccess",
+    "metadataFromHelperWorkflow",
     "nullByteWorkflow",
+    "outputStreamInsideStepWorkflow",
+    "outputStreamWorkflow",
     "parallelSleepWorkflow",
     "promiseAllWorkflow",
+    "promiseAnyWorkflow",
+    "promiseRaceStressTestWorkflow",
+    "promiseRaceWorkflow",
     "sleepInLoopWorkflow",
-    "sleepingWorkflow"
+    "sleepWinsRaceWorkflow",
+    "sleepingWorkflow",
+    "spawnWorkflowFromStepWorkflow",
+    "stepWinsRaceWorkflow",
+    "utf8StreamWorkflow"
   ],
   "unsupported": {
-    "resilient start: addTenWorkflow completes when run_created returns 500": "vercel-py's workflow handler reads the run row before replaying (runtime.py:569 `world.runs_get`) and 500s when it is absent. The TypeScript runtime instead bootstraps from `run_started` using the `runInput` the queue message carries. This test injects the missing row deliberately, but `start()` writes `run_created` and pushes the queue message in parallel, so any run can hit it — see the README."
+    "resilient start: addTenWorkflow completes when run_created returns 500": "vercel-py's workflow handler reads the run row before replaying (runtime.py:766 `world.runs_get`) and 500s when it is absent. The TypeScript runtime instead bootstraps from `run_started` using the `runInput` the queue message carries. This test injects the missing row deliberately, but `start()` writes `run_created` and pushes the queue message in parallel, so any run can hit it — see the README.",
+    "sleepWinsRaceWorkflow": "Same missing run row as the entry above, seen from the other side. When a run's first delivery loses that race the app answers 500, the world redelivers ~5s later, and the run's own clock — which starts at `run_created` in both SDKs — has already spent the test's 5s budget before the body runs. The race itself is fine: the fixture returns the right winner every time, and passes whenever the first delivery lands after the row.",
+    "stepWinsRaceWorkflow": "Same as `sleepWinsRaceWorkflow`.",
+    "FatalError fails immediately without retries": "The step lifecycle is right — `FatalError` burns exactly one attempt — but the run's `errorCode` is not. vercel-py writes `run_failed.code` as `type(e).__name__`, and by then the step's `FatalError` has been rehydrated into a `RuntimeError`, so the run carries `RuntimeError` where the test expects `USER_ERROR`.",
+    "FatalError can be caught and detected with FatalError.is()": "A thrown error does not keep its identity across the event log: vercel-py writes `step_failed.error` as text and the workflow side raises `RuntimeError(<text>)`, so the `FatalError` the step raised is no longer one by the time the body catches it. Upstream needs the serialized-error pipeline (`SerializedData` in place of the pre-#1851 `StructuredError` shape) before this and the two `RoundTrip` fixtures can pass."
   }
 }

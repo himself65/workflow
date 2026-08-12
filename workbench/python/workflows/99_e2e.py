@@ -23,10 +23,23 @@ that list is skipped by the suite. Only add a name there once its test passes.
 """
 
 import asyncio
+import json
 import random
+import re
 import time
+from typing import Any, Awaitable, TypeVar
 
-from vercel.workflow import Workflows, sleep, time_ns
+from vercel.workflow import (
+    FatalError,
+    Run,
+    WorkflowWritable,
+    Workflows,
+    get_step_metadata,
+    get_writable,
+    sleep,
+    start,
+    time_ns,
+)
 
 # `as_vercel_job=False` because `app.py` wires the queue entrypoints itself: the
 # default constructor creates them and discards the HTTP handlers, and calling
@@ -151,3 +164,466 @@ async def sleepInLoopWorkflow() -> dict:
             await sleep(sleepMs)
 
     return {"timestamps": timestamps, "totalElapsed": timestamps[-1] - timestamps[0]}
+
+
+##########################################################
+# Racing suspensions
+#
+# `Promise.race` and `Promise.any` have no asyncio spelling that takes bare
+# awaitables, so the five race fixtures below share these two helpers. Both
+# resolve ties by the order the awaitables were passed rather than by set
+# iteration order — `asyncio.wait` returns a `set`, and a workflow body has to
+# be deterministic across replays, so picking `next(iter(done))` would be a
+# latent replay divergence the moment two steps land in the same turn.
+#
+# Nothing cancels the losers, matching JS: a race that resolves leaves the
+# other steps running, the body returns, and `_run_in_loop` cancels the
+# orphaned tasks on its way out. Their step invocations are already in flight
+# and complete against a run that has finished, exactly as they do on the
+# TypeScript side.
+
+_T = TypeVar("_T")
+
+
+async def _race(*awaitables: Awaitable[_T]) -> _T:
+    """`Promise.race`: settle with the first to settle, error included."""
+    tasks = [asyncio.ensure_future(a) for a in awaitables]
+    done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in tasks:
+        if task in done:
+            return task.result()
+    raise AssertionError("asyncio.wait returned no completed task")
+
+
+async def _any(*awaitables: Awaitable[_T]) -> _T:
+    """`Promise.any`: the first to *succeed*; failures are skipped."""
+    tasks = [asyncio.ensure_future(a) for a in awaitables]
+    pending = set(tasks)
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            if task in done and task.exception() is None:
+                return task.result()
+    raise RuntimeError("all awaitables rejected")
+
+
+##########################################################
+# promiseRaceWorkflow — 99_e2e.ts:62
+# promiseAnyWorkflow — 99_e2e.ts:79
+#
+# The counterpart to `promiseAllWorkflow`: three steps suspend in one turn, but
+# the body resumes on the first one instead of all three. That is the case
+# where replay and completion overlap — the run finishes while two step
+# invocations are still outstanding.
+#
+# `promiseAnyWorkflow` additionally needs a step failure to be *skippable*
+# rather than fatal. Python surfaces a failed step to the body as a
+# `RuntimeError` carrying the step's error text (see the note on
+# `errorRetryDisabled` below), which is all `_any` needs — it only asks whether
+# the task raised.
+
+
+@app.step
+async def specificDelay(delay: int, v: str) -> str:
+    await asyncio.sleep(delay / 1000)
+    return v.upper()
+
+
+@app.workflow
+async def promiseRaceWorkflow() -> str:
+    return await _race(
+        specificDelay(10_000, "a"),
+        specificDelay(100, "b"),  # "b" should always win
+        specificDelay(20_000, "c"),
+    )
+
+
+@app.step
+async def stepThatFails() -> str:
+    raise FatalError("step failed")
+
+
+@app.workflow
+async def promiseAnyWorkflow() -> str:
+    return await _any(
+        stepThatFails(),
+        specificDelay(100, "b"),  # "b" should always win
+        specificDelay(6_000, "c"),
+    )
+
+
+##########################################################
+# sleepWinsRaceWorkflow — 99_e2e.ts:225
+# stepWinsRaceWorkflow — 99_e2e.ts:236
+#
+# A race between the two suspension kinds. `sleep` resumes from a timer the
+# world owns and a step resumes from an event the step handler writes, so these
+# assert that the orchestrator resolves whichever lands first without waiting
+# for the other — the driver bounds `durationMs` at 5s against a 10s loser.
+#
+# Both are listed under `unsupported` in `../e2e-conformance.json` even though
+# they pick the right winner every time, and the 5s bound is why: these are the
+# only two tests in the suite that bound a run's *elapsed* time from above, so
+# they are the only two that notice the ~5s `world-local` waits before
+# redelivering a first delivery the app 500'd on a run row it could not read
+# yet. That is the same upstream gap as the `resilient start` entry, and all
+# three exemptions come out together when it is fixed.
+
+
+@app.step
+async def delayMsStep(ms: int, label: str) -> str:
+    await asyncio.sleep(ms / 1000)
+    return label
+
+
+async def _sleepThen(duration: str, label: str) -> str:
+    """`sleep(...).then(() => label)` — a plain coroutine, not a step."""
+    await sleep(duration)
+    return label
+
+
+@app.workflow
+async def sleepWinsRaceWorkflow() -> dict:
+    startTime = time_ns() // 1_000_000
+    winner = await _race(delayMsStep(10_000, "step"), _sleepThen("1s", "sleep"))
+    endTime = time_ns() // 1_000_000
+    return {"winner": winner, "durationMs": endTime - startTime}
+
+
+@app.workflow
+async def stepWinsRaceWorkflow() -> dict:
+    startTime = time_ns() // 1_000_000
+    winner = await _race(delayMsStep(1_000, "step"), _sleepThen("10s", "sleep"))
+    endTime = time_ns() // 1_000_000
+    return {"winner": winner, "durationMs": endTime - startTime}
+
+
+##########################################################
+# promiseRaceStressTestWorkflow — 99_e2e.ts:478
+#
+# Five steps 5s apart, raced and retired one at a time, so the body re-enters
+# `_race` over a shrinking set across five separate replays. Each replay has to
+# rebuild the same suspensions in the same order and match them to the events
+# already in the log; a single misaligned slot shows up as a missing or
+# duplicated entry in the returned list.
+
+
+@app.step
+async def promiseRaceStressTestDelayStep(dur: int, resp: int) -> int:
+    await asyncio.sleep(dur / 1000)
+    return resp
+
+
+@app.workflow
+async def promiseRaceStressTestWorkflow() -> list:
+    # Tasks rather than coroutines: unlike a JS promise, a coroutine can only
+    # be awaited once, and every loop iteration races the survivors again.
+    promises = {
+        i: asyncio.ensure_future(promiseRaceStressTestDelayStep(1000 * 5 * i, i))
+        for i in range(5)
+    }
+    done = []
+
+    while promises:
+        res = await _race(*promises.values())
+        done.append(res)
+        del promises[res]
+
+    return done
+
+
+##########################################################
+# errorRetrySuccess — 99_e2e.ts:1279
+# errorRetryDisabled — 99_e2e.ts:1329
+#
+# The two halves of the step retry policy: the default (`DEFAULT_MAX_RETRIES`,
+# 3 in both SDKs) and `max_retries=0`. `get_step_metadata().attempt` is what
+# makes them observable from inside the step, and it is the same 1-based
+# counter the driver reads back off the step entity through the CLI.
+#
+# These two work because neither inspects the exception. `errorRetryDisabled`
+# reads its attempt number back out of the message *text*, which is the one part
+# of a thrown error that survives the event log — see the note on
+# `errorFatalCatchable` below for what does not.
+#
+# `errorRetryCustomDelay`, the third fixture in the same TypeScript block, is
+# not here at all: it needs `RetryableError(retryAfter=…)`, which vercel-py does
+# not export, and `StepInfo` carries no `step_started_at` for the test's
+# duration assertion either.
+
+
+@app.step
+async def retryUntilAttempt3() -> int:
+    attempt = get_step_metadata().attempt
+    if attempt < 3:
+        raise RuntimeError(f"Failed on attempt {attempt}")
+    return attempt
+
+
+@app.workflow
+async def errorRetrySuccess() -> dict:
+    return {"finalAttempt": await retryUntilAttempt3()}
+
+
+@app.step(max_retries=0)
+async def throwWithNoRetries() -> None:
+    raise RuntimeError(f"Failed on attempt {get_step_metadata().attempt}")
+
+
+@app.workflow
+async def errorRetryDisabled() -> dict:
+    try:
+        await throwWithNoRetries()
+        return {"failed": False, "attempt": None}
+    except Exception as e:
+        match = re.search(r"attempt (\d+)", str(e))
+        return {"failed": True, "attempt": int(match.group(1)) if match else None}
+
+
+##########################################################
+# outputStreamWorkflow — 99_e2e.ts:355
+# outputStreamInsideStepWorkflow — 99_e2e.ts:403
+# utf8StreamWorkflow — 99_e2e.ts:441
+#
+# Run-scoped streams, which are the one part of the protocol that does not
+# travel through the event log: chunks are appended to a separate per-run log
+# that a reader tails live. The driver reads them with `run.getReadable()`, so
+# these fixtures assert that Python's framing and payload encoding are the ones
+# `@workflow/core`'s `getDeserializeStream` expects.
+#
+# Both spellings of the same API are covered, because they take different paths
+# through the SDK. `get_writable()` in the *workflow body* returns a
+# `WorkflowStreamHandle` — the body replays and has no network, so it cannot
+# write — and passing that handle into a step's arguments is what turns it into
+# a writer, via the serialization layer. `get_writable()` in a *step* returns
+# the writer directly. The two have to name the same stream for the workflow to
+# be able to hand one to a step at all.
+#
+# A `bytes` chunk arrives on the TypeScript side as a `Uint8Array` and anything
+# else as its devalue value, which is why the driver reads chunk 0 as binary
+# and chunk 1 as an object.
+#
+# Nothing closes a stream implicitly in either SDK, and the driver asserts the
+# reader sees `done` — hence the explicit `stepCloseOutputStream` at the end of
+# each fixture.
+
+
+@app.step
+async def stepWithOutputStreamBinary(writable: WorkflowWritable, text: str) -> None:
+    await writable.write(text.encode())
+
+
+@app.step
+async def stepWithOutputStreamObject(writable: WorkflowWritable, obj: Any) -> None:
+    await writable.write(obj)
+
+
+@app.step
+async def stepCloseOutputStream(writable: WorkflowWritable) -> None:
+    await writable.close()
+
+
+@app.workflow
+async def outputStreamWorkflow() -> str:
+    writable = get_writable()
+    namedWritable = get_writable(namespace="test")
+    await sleep("1s")
+    await stepWithOutputStreamBinary(writable, "Hello, world!")
+    await sleep("1s")
+    await stepWithOutputStreamBinary(namedWritable, "Hello, named stream!")
+    await sleep("1s")
+    await stepWithOutputStreamObject(writable, {"foo": "test"})
+    await sleep("1s")
+    await stepWithOutputStreamObject(namedWritable, {"foo": "bar"})
+    await sleep("1s")
+    await stepCloseOutputStream(writable)
+    await stepCloseOutputStream(namedWritable)
+    return "done"
+
+
+@app.step
+async def stepWithOutputStreamInsideStep(text: str) -> None:
+    await get_writable().write(text.encode())
+
+
+@app.step
+async def stepWithNamedOutputStreamInsideStep(namespace: str, obj: Any) -> None:
+    await get_writable(namespace=namespace).write(obj)
+
+
+@app.step
+async def stepCloseOutputStreamInsideStep(namespace: str | None = None) -> None:
+    await get_writable(namespace=namespace).close()
+
+
+@app.workflow
+async def outputStreamInsideStepWorkflow() -> str:
+    await sleep("1s")
+    await stepWithOutputStreamInsideStep("Hello from step!")
+    await sleep("1s")
+    await stepWithNamedOutputStreamInsideStep(
+        "step-ns", {"message": "Hello from named stream in step!"}
+    )
+    await sleep("1s")
+    await stepWithOutputStreamInsideStep("Second message")
+    await sleep("1s")
+    await stepWithNamedOutputStreamInsideStep("step-ns", {"counter": 42})
+    await sleep("1s")
+    await stepCloseOutputStreamInsideStep()
+    await stepCloseOutputStreamInsideStep("step-ns")
+    return "done"
+
+
+@app.step
+async def stepWriteUtf8Text(writable: WorkflowWritable, text: str) -> None:
+    await writable.write(text.encode())
+
+
+@app.step
+async def stepWriteUtf8Json(writable: WorkflowWritable, value: Any) -> None:
+    await writable.write(json.dumps(value, ensure_ascii=False).encode())
+
+
+@app.workflow
+async def utf8StreamWorkflow() -> str:
+    writable = get_writable()
+    await sleep("1s")
+    await stepWriteUtf8Text(writable, "Hello, world!")
+    await stepWriteUtf8Text(writable, "Café — naïve résumé")
+    await stepWriteUtf8Text(writable, "你好，世界！🌍✨")
+    await stepWriteUtf8Text(writable, "مرحبا بالعالم")
+    await stepWriteUtf8Json(writable, {"greeting": "안녕하세요", "emoji": "🎉"})
+    await stepCloseOutputStream(writable)
+    return "done"
+
+
+##########################################################
+# errorRetryFatal — 99_e2e.ts:1293
+# errorFatalCatchable — 99_e2e.ts:1347
+#
+# `FatalError` is the one retry-control error vercel-py exports, and the step
+# handler honours it: `fatal or attempt >= max_retries + 1` is what decides
+# whether to write `step_failed` instead of `step_retrying`, so a step that
+# raises it burns exactly one attempt.
+#
+# Both tests are under `unsupported`, and for the half of each that Python
+# cannot do rather than the half it can. What works is the lifecycle above — the
+# one attempt, and the run failing on it. What does not is the error's
+# *identity*: `step_failed.error` is written as text and comes back to the
+# workflow body as `RuntimeError(<text>)`, so the `except` below sees no
+# `FatalError`, and the resulting `run_failed.code` is `type(e).__name__` on
+# that `RuntimeError` where the driver expects `USER_ERROR`. Upstream needs the
+# serialized-error pipeline (`SerializedData` in place of the pre-#1851
+# `StructuredError` shape); the two `RoundTrip` fixtures in the same TypeScript
+# block wait on the same change and are not ported at all, since they assert on
+# the cause chain and there would be nothing to assert.
+
+
+@app.step
+async def throwFatalError() -> None:
+    raise FatalError("Fatal step error")
+
+
+@app.workflow
+async def errorRetryFatal() -> str:
+    await throwFatalError()
+    return "never reached"
+
+
+@app.workflow
+async def errorFatalCatchable() -> dict:
+    try:
+        await throwFatalError()
+        return {"caught": False, "isFatal": False}
+    except Exception as e:
+        return {"caught": True, "isFatal": isinstance(e, FatalError)}
+
+
+##########################################################
+# metadataFromHelperWorkflow — 99_e2e.ts:3148
+#
+# Upstream's #1577 regression test: the metadata accessors have to work from a
+# helper defined at module level rather than inline in the step body. The
+# mechanism differs — `AsyncLocalStorage` there, a `contextvars.ContextVar`
+# here — but the failure mode it guards against is the same one, a context
+# that only propagates as far as the decorated function.
+#
+# Only the step half is checked. `getStepMetadata()`'s counterpart
+# `getWorkflowMetadata()` has no Python equivalent, so `workflowRunId` comes
+# off `StepInfo.run_id`, which is the same run id the TypeScript fixture reads
+# out of the workflow metadata. That also makes `workflowAndStepMetadataWorkflow`
+# — which asserts the two metadata objects against each other — unportable for
+# now, so it is not in this file.
+
+
+async def _withStrictMetadataCheck(fn):
+    stepMetadata = get_step_metadata()
+    return await fn(), stepMetadata
+
+
+@app.step
+async def metadataHelperStep(label: str) -> dict:
+    async def _produce() -> str:
+        return label
+
+    _result, stepMetadata = await _withStrictMetadataCheck(_produce)
+
+    return {
+        "label": label,
+        "workflowRunId": stepMetadata.run_id,
+        "stepId": stepMetadata.step_id,
+        "attempt": stepMetadata.attempt,
+    }
+
+
+@app.workflow
+async def metadataFromHelperWorkflow(label: str) -> dict:
+    return await metadataHelperStep(label)
+
+
+##########################################################
+# spawnWorkflowFromStepWorkflow — 99_e2e.ts:1112
+#
+# A run that starts another run. `start()` is a world write, so it can only
+# happen in a step — the workflow body replays and its sandbox has no network,
+# which is the same restriction the TypeScript fixture states in a comment.
+# Waiting for the child is a step for the same reason.
+#
+# `Run(run_id).return_value()` polls the child's status; the TypeScript
+# `getRun(runId).returnValue` is the same shape. Both hold the parent's step
+# open for as long as the child takes, which is the caveat the TS fixture's
+# `fibonacciWorkflow` neighbour documents at length — worth remembering before
+# porting that one, since its recursion needs the worker pool to be deep enough
+# for every waiting parent.
+
+
+@app.step
+async def doubleValue(value: int) -> int:
+    return value * 2
+
+
+@app.workflow
+async def childWorkflow(value: int) -> dict:
+    return {"childResult": await doubleValue(value), "originalValue": value}
+
+
+@app.step
+async def spawnChildWorkflow(value: int) -> str:
+    childRun = await start(childWorkflow, value)
+    return childRun.run_id
+
+
+@app.step
+async def awaitWorkflowResult(runId: str) -> Any:
+    return await Run(runId).return_value()
+
+
+@app.workflow
+async def spawnWorkflowFromStepWorkflow(inputValue: int) -> dict:
+    childRunId = await spawnChildWorkflow(inputValue)
+    childResult = await awaitWorkflowResult(childRunId)
+    return {
+        "parentInput": inputValue,
+        "childRunId": childRunId,
+        "childResult": childResult,
+    }
