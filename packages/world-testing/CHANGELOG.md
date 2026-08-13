@@ -1,5 +1,17 @@
 # @workflow/world-testing
 
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Slot-numbered event ids are a requirement of the World contract, not a capability. The `slotEventIds` flag is gone, and the conformance suite now fails a World whose event ids are not positions.
+
+- Updated dependencies [[`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6), [`9add9d7`](https://github.com/vercel/workflow/commit/9add9d782d0cbf41ce447175c7b9fe47846d794d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d)]:
+  - @workflow/world@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.42
+  - @workflow/cli@5.0.0-beta.42
+  - workflow@5.0.0-beta.42
+
 ## 5.0.0-beta.41
 
 ### Patch Changes
