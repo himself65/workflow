@@ -820,6 +820,13 @@ function toBatchEventV4Input(
     ...(isPrimaryFrame && batchParams?.batchId !== undefined
       ? { batchId: batchParams.batchId }
       : {}),
+    // Client logical timestamp for the leading outcome — primary frame only.
+    // The runtime sets it to the last durable event's createdAt (= the value
+    // its synthetic pre-commit completion used), so the durable completion's
+    // createdAt matches across replays.
+    ...(isPrimaryFrame && batchParams?.logicalCreatedAt !== undefined
+      ? { logicalCreatedAt: batchParams.logicalCreatedAt }
+      : {}),
     occurredAt: new Date(),
     remoteRefBehavior,
     payload,

@@ -1223,12 +1223,20 @@ export function workflowEntrypoint(
                     // NOT perturb the clock past the last durable event we
                     // already consumed (step_started(N)): reusing its `createdAt`
                     // makes consuming the synthetic a clock no-op and strips all
-                    // wall-clock entropy from the committing invocation. A
-                    // residual gap vs the server value remains (the durable
-                    // completion lands a few ms later) and can only be fully
-                    // closed by a deterministic server-side createdAt for the
-                    // batched completion — tracked as a workflow-server
-                    // follow-up.
+                    // wall-clock entropy from the committing invocation. This
+                    // exact value is ALSO sent as `logicalCreatedAt` on the
+                    // batch's primary-frame meta (see the createBatch calls
+                    // below), and workflow-server stamps the durable leading
+                    // completion's `createdAt` from it (validated for
+                    // monotonicity + skew). So the durable completed(N).createdAt
+                    // equals this synthetic value — which equals step_started(N)'s
+                    // createdAt — and every replay (discovery, post-commit merge,
+                    // cold) advances the VM clock to the identical timestamp,
+                    // fully closing the window. Against an older server that
+                    // ignores `logicalCreatedAt` the durable value falls back to a
+                    // server-minted time a few ms later; the residual is then the
+                    // narrow control-flow-only window this clock no-op already
+                    // covers.
                     const lastDurable =
                       cachedEvents && cachedEvents.length > 0
                         ? cachedEvents[cachedEvents.length - 1]
@@ -2248,6 +2256,22 @@ export function workflowEntrypoint(
                                       stateUpdatedAt: inlineClaimStateUpdatedAt,
                                     }
                                   : {}),
+                                // Logical timestamp for the leading outcome, sent
+                                // only when this batch HAS one (a pure fan-out
+                                // suspension has no deferred completion → no
+                                // pendingBatchTransition → omit, so the server
+                                // never mis-stamps a non-outcome index-0 frame).
+                                // Reads the SAME field the discovery replay
+                                // consumed (pending.syntheticCompleted), so the
+                                // value sent byte-equals the createdAt the VM
+                                // clock already advanced to — the durable
+                                // completion then lands on that exact value.
+                                ...(pendingBatchTransition
+                                  ? {
+                                      logicalCreatedAt:
+                                        pendingBatchTransition.syntheticCompleted.createdAt.getTime(),
+                                    }
+                                  : {}),
                               });
                               pendingBatchTransition = null;
                               expectedRunVersion =
@@ -2962,6 +2986,12 @@ export function workflowEntrypoint(
                                       stateUpdatedAt: inlineClaimStateUpdatedAt,
                                     }
                                   : {}),
+                                // Logical timestamp for the leading step_completed
+                                // — always present on the v1 sequential path. Same
+                                // field the discovery replay consumed, so the value
+                                // sent byte-equals the createdAt the VM clock saw.
+                                logicalCreatedAt:
+                                  pending.syntheticCompleted.createdAt.getTime(),
                               }
                             );
                             pendingBatchTransition = null;

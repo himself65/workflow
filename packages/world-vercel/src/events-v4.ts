@@ -210,6 +210,15 @@ export interface CreateEventV4Input {
    * (lastBatchId === batchId → idempotent 200). Ignored elsewhere.
    */
   batchId?: string;
+  /**
+   * v2 client logical timestamp (epoch ms) for the batch's leading outcome,
+   * carried on the PRIMARY (index-0) frame. The server stamps the durable
+   * leading `step_completed`/`step_failed` `createdAt` from it (validated
+   * >= the run's last durable event createdAt and <= server-now + skew;
+   * out-of-bounds/absent → server-minted fallback). Ignored on non-batch POSTs
+   * and by older servers.
+   */
+  logicalCreatedAt?: number;
 }
 
 export interface CreateEventV4Result {
@@ -303,6 +312,9 @@ function buildPostFrameMeta(
     meta.expectedRunVersion = input.expectedRunVersion;
   }
   if (input.batchId !== undefined) meta.batchId = input.batchId;
+  if (input.logicalCreatedAt !== undefined) {
+    meta.logicalCreatedAt = input.logicalCreatedAt;
+  }
   return meta;
 }
 

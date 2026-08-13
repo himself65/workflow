@@ -71,6 +71,22 @@ const stepAndWaitFanout = `const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]
     return x;
   }${xform('workflow')}`;
 
+// Two sequential steps, THEN a fan-out. a() is the first step (single path);
+// b()'s completion is deferred and folded into the c()/d() fan-out's collect
+// batch as its leading outcome → a collect batch that carries a leading
+// step_completed(b) AND two born-running pairs. Exercises the collect-mode
+// send site's positive logicalCreatedAt branch (guard present).
+const seqThenFanout = `const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ffan1");
+  const b = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ffan2");
+  const c = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ffan3");
+  const d = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ffan4");
+  async function workflow() {
+    await a();
+    await b();
+    const [x, y] = await Promise.all([c(), d()]);
+    return [x, y];
+  }${xform('workflow')}`;
+
 interface BatchCall {
   events: Array<{ eventType: string; correlationId?: string }>;
   params?: {
@@ -79,6 +95,7 @@ interface BatchCall {
     requestId?: string;
     expectedRunVersion?: number;
     batchId?: string;
+    logicalCreatedAt?: number;
   };
 }
 
@@ -340,6 +357,10 @@ describe('runtime collect-mode fan-out batching', () => {
     expect(ev[0].correlationId).toBe(ev[1].correlationId);
     expect(ev[2].correlationId).toBe(ev[3].correlationId);
     expect(ev[0].correlationId).not.toBe(ev[2].correlationId);
+    // Pure fan-out (first suspension, no deferred leading outcome): the batch
+    // has no index-0 completion to pin, so logicalCreatedAt is OMITTED — the
+    // server must never mis-stamp a non-outcome primary frame.
+    expect(batchCalls[0].params?.logicalCreatedAt).toBeUndefined();
     // Neither inline step issued a separate step_started create (both came from
     // the batch), and both bodies ran exactly once via preStarted.
     expect(startedStepIds(created)).toHaveLength(0);
@@ -347,6 +368,34 @@ describe('runtime collect-mode fan-out batching', () => {
     expect(bodyRuns.ffan2).toBe(1);
     // The run completes: Promise.all resolves once both inline steps are done.
     expect(durable.some((e) => e.eventType === 'run_completed')).toBe(true);
+  });
+
+  it('leading outcome + fan-out: the collect batch sends logicalCreatedAt = the deferred completion source (step_started(b).createdAt)', async () => {
+    // a() single path; b() deferred; the c()/d() fan-out commits a collect
+    // batch whose index-0 frame is the deferred step_completed(b). The collect
+    // send site (guard present) must carry logicalCreatedAt = the value the
+    // synthetic step_completed(b) used = step_started(b).createdAt — same field
+    // the discovery replay consumed (pending.syntheticCompleted).
+    const { batchCalls, durable } = await driveFanout({
+      runId: 'wrun_fanout_leading',
+      source: seqThenFanout,
+      withBatch: true,
+    });
+
+    const leadingBatch = batchCalls.find((b) =>
+      b.events.some((e) => e.eventType === 'step_completed')
+    );
+    expect(leadingBatch).toBeDefined();
+    // index-0 is the leading completion, followed by the two born-running pairs.
+    expect(leadingBatch!.events[0].eventType).toBe('step_completed');
+    const bId = leadingBatch!.events[0].correlationId!;
+    const startedB = durable.find(
+      (e) => e.eventType === 'step_started' && e.correlationId === bId
+    );
+    expect(startedB).toBeDefined();
+    expect(leadingBatch!.params?.logicalCreatedAt).toBe(
+      startedB!.createdAt.getTime()
+    );
   });
 
   it('v2 fence: the fan-out batch carries expectedRunVersion 0 and a bat_ id', async () => {

@@ -853,6 +853,22 @@ export interface CreateBatchParams {
    * {@link BatchEventResult.lastBatchId}). Omitted for v1 batches.
    */
   batchId?: string;
+  /**
+   * Client logical timestamp (epoch ms) for the batch's PRIMARY (index-0)
+   * frame, which in a suspension batch is the deferred leading outcome
+   * (`step_completed`/`step_failed`). Set to the `createdAt` of the last
+   * durable event on the run at the moment the batch was assembled — the SAME
+   * value the runtime consumed for its synthetic pre-commit copy of that
+   * completion during the discovery replay. A supporting World stamps the
+   * durable leading outcome's `createdAt` from it (validated for monotonicity +
+   * skew), so the timestamp the discovery replay observed and the one every
+   * later replay observes are identical, closing the batched-completion
+   * replay-divergence window (the VM clock advances to each consumed event's
+   * `createdAt`). Omitted when the batch has no leading outcome (pure fan-out)
+   * or by v1 clients; a World that doesn't honor it mints `createdAt` as before
+   * (older behavior, byte-identical for callers that omit it).
+   */
+  logicalCreatedAt?: number;
 }
 
 /**

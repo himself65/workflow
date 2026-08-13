@@ -61,6 +61,9 @@ interface BatchCall {
     sinceCursor?: string;
     stateUpdatedAt?: number;
     requestId?: string;
+    expectedRunVersion?: number;
+    batchId?: string;
+    logicalCreatedAt?: number;
   };
 }
 
@@ -415,6 +418,88 @@ describe('runtime batch step transitions', () => {
     // the batch WON s3's claim (stepCreated:true), so its body runs exactly
     // once via preStarted.
     expect(bodyRuns.bstep3).toBe(1);
+  });
+
+  it('leading completion: sends logicalCreatedAt = the last durable event createdAt (the synthetic source); honoring it lands completed(N).createdAt == step_started(N).createdAt', async () => {
+    // The batched leading step_completed(N) is deferred: the runtime advances
+    // its VM past step N during the pre-commit replay by consuming a SYNTHETIC
+    // step_completed(N) timestamped with the last durable event's createdAt
+    // (= step_started(N).createdAt — the VM clock advances to it). It sends
+    // that SAME value as `logicalCreatedAt` on the batch's primary frame, so a
+    // server honoring it stamps the durable completion with the identical
+    // timestamp the discovery replay (and every later replay) observed. This
+    // locks the client half (the sent value == the synthetic's source) AND the
+    // coordinated end-state (completed(N).createdAt == step_started(N).createdAt).
+    const { batchCalls, durable } = await driveRun({
+      runId: 'wrun_batch_logical_ts',
+      withBatch: true,
+      // Simulate workflow-server#646 honoring logicalCreatedAt: stamp the
+      // leading step_completed's durable createdAt from the run's last durable
+      // event (which, per the send assertion below, equals logicalCreatedAt),
+      // instead of a fresh new Date().
+      batchImpl: async (events, dur, recFn, mkStep) => {
+        const preBatchLast = dur[dur.length - 1];
+        const inputByStep = new Map<string, unknown>();
+        for (const e of events) {
+          if (e.eventType === 'step_created') {
+            inputByStep.set(e.correlationId, e.eventData?.input);
+          }
+        }
+        const results = events.map((data: any) => {
+          if (data.eventType === 'step_completed') {
+            return {
+              event: recFn({ ...data, createdAt: preBatchLast.createdAt }),
+              step: { ...mkStep(data), status: 'completed' as const },
+            };
+          }
+          if (data.eventType === 'step_created') {
+            return { event: recFn(data), step: mkStep(data) };
+          }
+          return {
+            event: recFn(data),
+            step: mkStep(data, inputByStep.get(data.correlationId)),
+            stepCreated: true,
+          };
+        });
+        return {
+          results,
+          events: [...dur],
+          cursor: `cursor-${dur.length}`,
+          hasMore: false,
+          runVersion: 1,
+        };
+      },
+    });
+
+    expect(batchCalls).toHaveLength(1);
+    const completed = batchCalls[0].events.find(
+      (e) => e.eventType === 'step_completed'
+    );
+    expect(completed).toBeDefined();
+    const s2 = completed!.correlationId!;
+    // The last durable event before the batch is step_started(s2) — exactly
+    // what the synthetic completion (and thus the VM clock) consumed.
+    const startedS2 = durable.find(
+      (e) => e.eventType === 'step_started' && e.correlationId === s2
+    );
+    expect(startedS2).toBeDefined();
+
+    // Client half: the batch carried logicalCreatedAt = step_started(s2)'s
+    // createdAt in epoch ms — the same value the synthetic pre-commit
+    // completion used. This is the "send byte-equals consume" invariant.
+    expect(batchCalls[0].params?.logicalCreatedAt).toBe(
+      startedS2!.createdAt.getTime()
+    );
+
+    // Coordinated end-state: honoring it, the durable step_completed(s2) landed
+    // on step_started(s2)'s createdAt — completed(N).createdAt == started(N).
+    const durableCompletedS2 = durable.find(
+      (e) => e.eventType === 'step_completed' && e.correlationId === s2
+    );
+    expect(durableCompletedS2).toBeDefined();
+    expect(durableCompletedS2!.createdAt.getTime()).toBe(
+      startedS2!.createdAt.getTime()
+    );
   });
 
   it('world lacks createBatch: falls back to the single-POST path entirely', async () => {
