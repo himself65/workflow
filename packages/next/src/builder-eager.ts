@@ -18,10 +18,12 @@ import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
 import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
+  captureSourceSnapshots,
   classifyRebuild,
   createSourceSnapshot,
   type FileChanges,
   getRelevantFiles,
+  reconcileSnapshotsAfterFullRebuild,
   replaceSourceSnapshots,
   type SourceSnapshot,
 } from './watch-rebuild.js';
@@ -251,6 +253,18 @@ export async function getNextBuilderEager(
         };
 
         const fullRebuild = async () => {
+          // Capture the baseline before the (potentially multi-second) build
+          // reads the sources: `refreshSourceSnapshots()` below re-reads them
+          // from disk after the build, so an edit landing mid-rebuild would
+          // otherwise be absorbed into the baseline without ever being built,
+          // and its queued watcher event would then classify as a no-op.
+          const preBuildSnapshots = await captureSourceSnapshots({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+            readSnapshot: readSourceSnapshot,
+          });
+
           this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
@@ -276,6 +290,10 @@ export async function getNextBuilderEager(
 
           await writeManifest(newCombined.manifest);
           await refreshSourceSnapshots();
+          reconcileSnapshotsAfterFullRebuild({
+            preBuildSnapshots,
+            sourceSnapshots,
+          });
         };
 
         const isWatchableFile = (path: string) =>

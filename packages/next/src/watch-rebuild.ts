@@ -285,6 +285,82 @@ export const replaceSourceSnapshots = async ({
   );
 };
 
+/**
+ * Read snapshots for every currently relevant file without mutating the
+ * shared baseline map. Used to capture pre-build content before a full
+ * rebuild starts, so the baseline can later be pinned to what the rebuild
+ * actually consumed (see `reconcileSnapshotsAfterFullRebuild`).
+ */
+export const captureSourceSnapshots = async ({
+  discoveredEntries,
+  inputFiles,
+  normalizePath = defaultNormalizePath,
+  readSnapshot,
+}: {
+  discoveredEntries: DiscoveredEntriesLike;
+  inputFiles: string[];
+  normalizePath?: (path: string) => string;
+  readSnapshot: (file: string) => Promise<SourceSnapshot>;
+}): Promise<Map<string, SourceSnapshot>> => {
+  const snapshots = new Map<string, SourceSnapshot>();
+  await Promise.all(
+    [
+      ...getRelevantFiles({
+        discoveredEntries,
+        inputFiles,
+        normalizePath,
+      }),
+    ].map(async (file) => {
+      try {
+        snapshots.set(file, await readSnapshot(file));
+      } catch {}
+    })
+  );
+  return snapshots;
+};
+
+/**
+ * Re-anchor the baseline snapshots after a full rebuild.
+ *
+ * A full rebuild reads sources twice: once when the bundler consumes them and
+ * once when the baseline is refreshed from disk afterwards. An edit that
+ * lands between those reads would be absorbed into the baseline without ever
+ * being built, and its queued watcher event would then classify as a no-op —
+ * silently dropping the change until the next unrelated rebuild.
+ *
+ * To prevent that, files that were already tracked before the rebuild have
+ * their baseline pinned to the pre-build content (`preBuildSnapshots`), so a
+ * mid-rebuild edit still diffs against what the rebuild consumed — while a
+ * duplicate watcher event for content the rebuild already consumed diffs
+ * equal and stays a no-op. (Watchers routinely emit several events for one
+ * edit, and the edit that triggered this rebuild is itself a source of such
+ * stragglers; treating every one as a change would cascade into
+ * back-to-back full rebuilds.)
+ *
+ * Files the rebuild discovered for the first time have no pre-build content
+ * to pin and keep their post-build baseline. That is already sound for the
+ * two cases that matter: a new file the build missed has no baseline at all,
+ * so its queued add event forces the follow-up rebuild, and a new file the
+ * build did consume gets a baseline matching what it consumed. What stays
+ * uncovered is a file that is created and then edited again within one
+ * rebuild window — a sub-second double-write race that eviction-style
+ * conservatism was tried against and rejected: it turned every added file's
+ * routine duplicate watcher events into redundant full rebuilds.
+ */
+export const reconcileSnapshotsAfterFullRebuild = ({
+  preBuildSnapshots,
+  sourceSnapshots,
+}: {
+  preBuildSnapshots: Map<string, SourceSnapshot>;
+  sourceSnapshots: Map<string, SourceSnapshot>;
+}) => {
+  for (const [file, snapshot] of preBuildSnapshots) {
+    if (sourceSnapshots.has(file)) {
+      sourceSnapshots.set(file, snapshot);
+    }
+  }
+};
+
 const didSourceSnapshotChange = (
   previousSnapshot: SourceSnapshot,
   nextSnapshot: SourceSnapshot
