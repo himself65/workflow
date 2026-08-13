@@ -8,6 +8,7 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
+  EventStreamObserver,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -601,7 +602,8 @@ function shouldRetryWithoutEventCursor(
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  onEvent?: EventStreamObserver
 ): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
   return trace(
@@ -637,6 +639,7 @@ export async function loadWorkflowRunEvents(
               sortOrder: 'asc',
               cursor: requestedCursor ?? undefined,
             },
+            onEvent,
           });
         } catch (error) {
           if (
@@ -1254,7 +1257,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
  */
 export function memoizeEncryptionKey(
   world: World,
-  runOrId: WorkflowRun | string
+  runOrId: WorkflowRun | string,
+  context?: Record<string, unknown>
 ): () => Promise<PayloadKey | undefined> {
   let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
@@ -1265,7 +1269,7 @@ export function memoizeEncryptionKey(
         // here so TypeScript picks the right overload for each shape.
         const rawKey =
           typeof runOrId === 'string'
-            ? await world.getEncryptionKeyForRun?.(runOrId)
+            ? await world.getEncryptionKeyForRun?.(runOrId, context)
             : await world.getEncryptionKeyForRun?.(runOrId);
         // Resolve the *full* capability, not just the symmetric key: a run
         // reading its own event log may encounter sealed (`encp`) payloads

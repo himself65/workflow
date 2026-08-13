@@ -725,6 +725,13 @@ export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
 export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 
 /**
+ * Local observer invoked as each event is decoded from a streamed response.
+ * Worlds without a streaming implementation may ignore it. The callback is
+ * synchronous and must enqueue work rather than block response consumption.
+ */
+export type EventStreamObserver = (event: Event) => void;
+
+/**
  * Union of all possible event request types.
  * @internal Use CreateEventRequest or RunCreatedEventRequest instead.
  */
@@ -939,6 +946,11 @@ export interface CreateEventParams {
    * `resumeHook()` must not set it.
    */
   preloadEvents?: true;
+  /**
+   * Observe replay-preload events as their frames are decoded. This is a
+   * client-side delivery hook only; it is never serialized to a backend.
+   */
+  onEvent?: EventStreamObserver;
 }
 
 /**
@@ -1025,6 +1037,8 @@ export interface ListEventsParams {
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+  /** Observe events as a streaming World decodes them. */
+  onEvent?: EventStreamObserver;
 }
 
 export interface ListEventsByCorrelationIdParams {

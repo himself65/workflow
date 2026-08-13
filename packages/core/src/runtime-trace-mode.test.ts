@@ -201,6 +201,9 @@ async function driveHandler(opts: {
   const getWorldSpan = exporter
     .getFinishedSpans()
     .find((s) => s.name === 'workflow.route.get_world');
+  const replayPayloadPreparationSpan = exporter
+    .getFinishedSpans()
+    .find((s) => s.name === 'workflow.replay.prepare_payloads');
 
   return {
     workflowSpan,
@@ -208,6 +211,7 @@ async function driveHandler(opts: {
     routeInitSpan,
     getWorldHandlersSpan,
     getWorldSpan,
+    replayPayloadPreparationSpan,
     deliverySpan,
     queuedMessages,
   };
@@ -254,6 +258,7 @@ describe('workflowEntrypoint trace modes', () => {
       routeInitSpan,
       getWorldHandlersSpan,
       getWorldSpan,
+      replayPayloadPreparationSpan,
       deliverySpan,
     } = await driveHandler({
       runId: 'wrun_trace_linked',
@@ -287,6 +292,10 @@ describe('workflowEntrypoint trace modes', () => {
     );
     expect(getWorldSpan).toBeDefined();
     expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+    expect(replayPayloadPreparationSpan).toBeDefined();
+    expect(replayPayloadPreparationSpan?.parentSpanId).toBe(
+      workflowSpan?.spanContext().spanId
+    );
 
     expect(workflowSpan).toBeDefined();
     // Child of the local /flow route span — same trace, so one

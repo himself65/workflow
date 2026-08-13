@@ -38,10 +38,12 @@ import {
   type CompressionStats,
   compress,
   decompress,
+  decompressReplayPayload,
 } from './serialization/compression.js';
 import {
   aesKeyOf,
   decrypt,
+  decryptReplayPayload,
   deriveRunPayloadKeys,
   type EncryptionKeyParam,
   encrypt,
@@ -3398,17 +3400,27 @@ export type ReplayPayloadPreparer = (
  * Decrypt and decompress persisted data without parsing it into JavaScript.
  * Legacy non-binary values pass through unchanged for their consumer to revive.
  */
-export const prepareReplayPayload: ReplayPayloadPreparer = async (
-  value,
-  key
-) => {
+export const prepareReplayPayload: ReplayPayloadPreparer = (value, key) => {
   const compressionStats: CompressionStats = {};
-  const prepared = await decompress(
-    await decrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return { data: prepared };
+  const finish = (prepared: unknown): PreparedReplayPayload => {
+    // Compression telemetry is best-effort and must not put an otherwise
+    // synchronous replay preparation back behind a promise boundary.
+    void recordCompression(compressionStats, 'deserialize');
+    return { data: prepared };
+  };
+  const decompressPrepared = (
+    decrypted: unknown
+  ): PreparedReplayPayload | Promise<PreparedReplayPayload> => {
+    const prepared = decompressReplayPayload(decrypted, compressionStats);
+    return prepared instanceof Promise
+      ? prepared.then(finish)
+      : finish(prepared);
+  };
+
+  const decrypted = decryptReplayPayload(value, key);
+  return decrypted instanceof Promise
+    ? decrypted.then(decompressPrepared)
+    : decompressPrepared(decrypted);
 };
 
 /**

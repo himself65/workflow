@@ -8,6 +8,16 @@ import {
 
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';
+type EncryptionKeySource =
+  | PayloadKey
+  | undefined
+  | Promise<PayloadKey | undefined>;
+
+interface ScheduledPreparation {
+  value: Uint8Array;
+  resolve: (value: PreparedReplayPayload) => void;
+  reject: (reason?: unknown) => void;
+}
 
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
@@ -39,13 +49,77 @@ export class ReplayPayloadCache {
     string,
     Promise<PreparedReplayPayload>
   >();
-  private readonly primitiveStepResults = new Map<string, unknown>();
+  private readonly pendingPreparations = new Set<
+    Promise<PreparedReplayPayload>
+  >();
+  private readonly primitiveValues = new Map<string, unknown>();
+  private readonly scheduledPreparations: ScheduledPreparation[] = [];
+  private encryptionKey:
+    | { state: 'pending'; promise: Promise<PayloadKey | undefined> }
+    | { state: 'ready'; value: PayloadKey | undefined }
+    | { state: 'failed'; error: unknown };
+  private preparationTurnScheduled = false;
   private nextUnscannedEventIndex = 0;
 
   constructor(
-    private readonly encryptionKey: PayloadKey | undefined,
+    encryptionKey: EncryptionKeySource,
     private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
-  ) {}
+  ) {
+    if (encryptionKey instanceof Promise) {
+      this.encryptionKey = { state: 'pending', promise: encryptionKey };
+      void encryptionKey.then(
+        (value) => {
+          this.encryptionKey = { state: 'ready', value };
+          this.schedulePreparationTurn();
+        },
+        (error) => {
+          this.encryptionKey = { state: 'failed', error };
+          this.rejectScheduledPreparations(error);
+        }
+      );
+    } else {
+      this.encryptionKey = { state: 'ready', value: encryptionKey };
+    }
+  }
+
+  /**
+   * Observe one decoded event while its response body is still arriving.
+   * Preparation is queued onto a later event-loop turn so frame parsing itself
+   * never waits on synchronous AES/zstd work.
+   */
+  observeEvent(event: Event): Promise<PreparedReplayPayload> | undefined {
+    switch (event.eventType) {
+      case 'run_created':
+        return this.startPreparation(
+          this.workflowInputKey(event.runId),
+          event.eventData.input
+        );
+      case 'run_started':
+        return event.eventData?.input === undefined
+          ? undefined
+          : this.startPreparation(
+              this.workflowInputKey(event.runId),
+              event.eventData.input
+            );
+      case 'step_completed':
+        return this.startPreparation(
+          this.eventPayloadKey(event.eventId, 'result'),
+          event.eventData?.result
+        );
+      case 'step_failed':
+        return this.startPreparation(
+          this.eventPayloadKey(event.eventId, 'error'),
+          event.eventData?.error
+        );
+      case 'hook_received':
+        return this.startPreparation(
+          this.eventPayloadKey(event.eventId, 'payload'),
+          event.eventData?.payload
+        );
+      default:
+        return undefined;
+    }
+  }
 
   /**
    * Start every missing binary preparation before workflow execution. Failures
@@ -53,17 +127,12 @@ export class ReplayPayloadCache {
    * original rejection before that entry becomes retryable.
    */
   async prewarm(workflowRun: WorkflowRun, events: Event[]): Promise<void> {
-    const preparations: Promise<PreparedReplayPayload>[] = [];
     const start = (cacheKey: string, value: unknown): void => {
       // Legacy flattened values may be mutated by devalue's unflatten and are
       // therefore prepared only by their eventual consumer, never cached.
       if (!(value instanceof Uint8Array)) return;
 
-      // Each replay scans the full event log, so awaiting cached promises here
-      // would add O(N^2) promise reactions over an N-step invocation. Only wait
-      // for preparations first discovered by this prewarm pass.
-      if (this.preparedPayloads.has(cacheKey)) return;
-      preparations.push(this.ensurePreparation(cacheKey, value));
+      this.ensurePreparation(cacheKey, value);
     };
 
     start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
@@ -103,9 +172,10 @@ export class ReplayPayloadCache {
     }
     this.nextUnscannedEventIndex = events.length;
 
-    // Prewarming is speculative and must not fail replay before the matching
-    // event is consumed. allSettled also attaches rejection handlers eagerly.
-    await Promise.allSettled(preparations);
+    // Wait only for work that is still pending. Completed cache entries are not
+    // re-added on later replay passes, avoiding O(N^2) promise reactions.
+    // Failures remain speculative until the ordered consumer asks for them.
+    await Promise.allSettled([...this.pendingPreparations]);
   }
 
   /**
@@ -146,21 +216,23 @@ export class ReplayPayloadCache {
   }
 
   /**
-   * Reuse final step values only when sharing them across VMs is unobservable.
+   * Reuse final event values only when sharing them across VMs is unobservable.
    * Objects and large strings/bigints always run `hydrate` again, producing a
    * fresh VM-specific value from the separately cached prepared payload.
    */
-  async getStepResult(
+  async getPrimitiveValue(
     eventId: string,
+    field: ReplayPayloadField,
     hydrate: () => Promise<unknown>
   ): Promise<unknown> {
-    if (this.primitiveStepResults.has(eventId)) {
-      return this.primitiveStepResults.get(eventId);
+    const cacheKey = this.eventPayloadKey(eventId, field);
+    if (this.primitiveValues.has(cacheKey)) {
+      return this.primitiveValues.get(cacheKey);
     }
 
     const value = await hydrate();
     if (isMemoizablePrimitive(value)) {
-      this.primitiveStepResults.set(eventId, value);
+      this.primitiveValues.set(cacheKey, value);
     }
     return value;
   }
@@ -187,19 +259,122 @@ export class ReplayPayloadCache {
   /** Start preparation once and share the exact in-flight promise. */
   private ensurePreparation(
     cacheKey: string,
-    value: Uint8Array
+    value: Uint8Array,
+    defer = false
   ): Promise<PreparedReplayPayload> {
     const cached = this.preparedPayloads.get(cacheKey);
     if (cached) return cached;
+    if (this.encryptionKey.state === 'failed') {
+      const failed = Promise.reject<PreparedReplayPayload>(
+        this.encryptionKey.error
+      );
+      void failed.catch(() => {});
+      return failed;
+    }
 
-    const preparation = this.runPreparation(value);
+    let resolve!: (value: PreparedReplayPayload) => void;
+    let reject!: (reason?: unknown) => void;
+    const preparation = new Promise<PreparedReplayPayload>(
+      (resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      }
+    );
     this.preparedPayloads.set(cacheKey, preparation);
+    this.pendingPreparations.add(preparation);
+    // Speculative work may fail before its ordered consumer exists. Attach a
+    // handler immediately; consumePreparation still sees the original promise.
+    void preparation.catch(() => {});
+    void preparation.then(
+      () => this.pendingPreparations.delete(preparation),
+      () => this.pendingPreparations.delete(preparation)
+    );
+    const scheduled = { value, resolve, reject };
+    if (!defer && this.encryptionKey.state === 'ready') {
+      this.launchPreparation(scheduled);
+    } else {
+      this.scheduledPreparations.push(scheduled);
+      this.schedulePreparationTurn();
+    }
     return preparation;
   }
 
-  /** Normalize synchronous and asynchronous preparers to one promise contract. */
+  private startPreparation(
+    cacheKey: string,
+    value: unknown
+  ): Promise<PreparedReplayPayload> | undefined {
+    if (!(value instanceof Uint8Array)) return undefined;
+    return this.ensurePreparation(cacheKey, value, true);
+  }
+
+  /** Consumer-only path for legacy non-binary values. */
   private async runPreparation(value: unknown): Promise<PreparedReplayPayload> {
-    return this.preparer(value, this.encryptionKey);
+    switch (this.encryptionKey.state) {
+      case 'ready':
+        return this.preparer(value, this.encryptionKey.value);
+      case 'pending':
+        return this.preparer(value, await this.encryptionKey.promise);
+      case 'failed':
+        throw this.encryptionKey.error;
+    }
+  }
+
+  /**
+   * Run a short preparation slice, then yield back to I/O. One response can
+   * decode hundreds of frames from a buffered chunk; doing all synchronous
+   * decrypt/decompress work inside that callback would manufacture
+   * backpressure even when the network had capacity left.
+   */
+  private schedulePreparationTurn(): void {
+    if (
+      this.preparationTurnScheduled ||
+      this.scheduledPreparations.length === 0 ||
+      this.encryptionKey.state !== 'ready'
+    ) {
+      return;
+    }
+    this.preparationTurnScheduled = true;
+    setImmediate(() => {
+      this.preparationTurnScheduled = false;
+      if (this.encryptionKey.state !== 'ready') return;
+
+      const startedAt = performance.now();
+      let launched = 0;
+      while (
+        this.scheduledPreparations.length > 0 &&
+        launched < 16 &&
+        performance.now() - startedAt < 1
+      ) {
+        const scheduled = this.scheduledPreparations.shift();
+        if (!scheduled) break;
+        launched++;
+        this.launchPreparation(scheduled);
+      }
+      this.schedulePreparationTurn();
+    });
+  }
+
+  private launchPreparation(scheduled: ScheduledPreparation): void {
+    if (this.encryptionKey.state !== 'ready') {
+      this.scheduledPreparations.unshift(scheduled);
+      return;
+    }
+    try {
+      const result = this.preparer(scheduled.value, this.encryptionKey.value);
+      if (result instanceof Promise) {
+        void result.then(scheduled.resolve, scheduled.reject);
+      } else {
+        scheduled.resolve(result);
+      }
+    } catch (error) {
+      scheduled.reject(error);
+    }
+  }
+
+  private rejectScheduledPreparations(error: unknown): void {
+    for (const scheduled of this.scheduledPreparations.splice(0)) {
+      scheduled.reject(error);
+    }
   }
 
   private workflowInputKey(runId: string): string {
