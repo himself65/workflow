@@ -114,7 +114,7 @@ describe('ReplayPayloadCache', () => {
     allSettled.mockRestore();
   });
 
-  it('observes streamed events without preparing inside the decoder callback', async () => {
+  it('prepares streamed events synchronously inside the decoder callback', async () => {
     const payload = new Uint8Array([1]);
     const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
     const cache = new ReplayPayloadCache(undefined, preparer);
@@ -122,8 +122,26 @@ describe('ReplayPayloadCache', () => {
 
     const preparation = cache.observeEvent(event);
     expect(preparation).toBeDefined();
+    expect(preparer).toHaveBeenCalledOnce();
+
+    await expect(preparation).resolves.toEqual({ data: payload });
+  });
+
+  it('prepares queued stream events as soon as the run key resolves', async () => {
+    const payload = new Uint8Array([1]);
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+    let resolveKey!: (key: undefined) => void;
+    const key = new Promise<undefined>((resolve) => {
+      resolveKey = resolve;
+    });
+    const cache = new ReplayPayloadCache(key, preparer);
+    const [event] = makeEvents([payload]);
+
+    const preparation = cache.observeEvent(event);
+    expect(preparation).toBeDefined();
     expect(preparer).not.toHaveBeenCalled();
 
+    resolveKey(undefined);
     await expect(preparation).resolves.toEqual({ data: payload });
     expect(preparer).toHaveBeenCalledOnce();
   });

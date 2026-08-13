@@ -53,12 +53,11 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveValues = new Map<string, unknown>();
-  private readonly scheduledPreparations: ScheduledPreparation[] = [];
+  private readonly preparationsWaitingForKey: ScheduledPreparation[] = [];
   private encryptionKey:
     | { state: 'pending'; promise: Promise<PayloadKey | undefined> }
     | { state: 'ready'; value: PayloadKey | undefined }
     | { state: 'failed'; error: unknown };
-  private preparationTurnScheduled = false;
   private nextUnscannedEventIndex = 0;
 
   constructor(
@@ -70,11 +69,11 @@ export class ReplayPayloadCache {
       void encryptionKey.then(
         (value) => {
           this.encryptionKey = { state: 'ready', value };
-          this.schedulePreparationTurn();
+          this.launchPreparationsWaitingForKey();
         },
         (error) => {
           this.encryptionKey = { state: 'failed', error };
-          this.rejectScheduledPreparations(error);
+          this.rejectPreparationsWaitingForKey(error);
         }
       );
     } else {
@@ -84,8 +83,9 @@ export class ReplayPayloadCache {
 
   /**
    * Observe one decoded event while its response body is still arriving.
-   * Preparation is queued onto a later event-loop turn so frame parsing itself
-   * never waits on synchronous AES/zstd work.
+   * When the run key is ready, synchronous AES/zstd preparation happens here,
+   * directly after frame validation. If key resolution is still in flight,
+   * preparation starts synchronously when that shared promise settles.
    */
   observeEvent(event: Event): Promise<PreparedReplayPayload> | undefined {
     switch (event.eventType) {
@@ -259,8 +259,7 @@ export class ReplayPayloadCache {
   /** Start preparation once and share the exact in-flight promise. */
   private ensurePreparation(
     cacheKey: string,
-    value: Uint8Array,
-    defer = false
+    value: Uint8Array
   ): Promise<PreparedReplayPayload> {
     const cached = this.preparedPayloads.get(cacheKey);
     if (cached) return cached;
@@ -290,11 +289,10 @@ export class ReplayPayloadCache {
       () => this.pendingPreparations.delete(preparation)
     );
     const scheduled = { value, resolve, reject };
-    if (!defer && this.encryptionKey.state === 'ready') {
-      this.launchPreparation(scheduled);
+    if (this.encryptionKey.state === 'ready') {
+      this.launchPreparation(scheduled, this.encryptionKey.value);
     } else {
-      this.scheduledPreparations.push(scheduled);
-      this.schedulePreparationTurn();
+      this.preparationsWaitingForKey.push(scheduled);
     }
     return preparation;
   }
@@ -304,7 +302,7 @@ export class ReplayPayloadCache {
     value: unknown
   ): Promise<PreparedReplayPayload> | undefined {
     if (!(value instanceof Uint8Array)) return undefined;
-    return this.ensurePreparation(cacheKey, value, true);
+    return this.ensurePreparation(cacheKey, value);
   }
 
   /** Consumer-only path for legacy non-binary values. */
@@ -319,48 +317,20 @@ export class ReplayPayloadCache {
     }
   }
 
-  /**
-   * Run a short preparation slice, then yield back to I/O. One response can
-   * decode hundreds of frames from a buffered chunk; doing all synchronous
-   * decrypt/decompress work inside that callback would manufacture
-   * backpressure even when the network had capacity left.
-   */
-  private schedulePreparationTurn(): void {
-    if (
-      this.preparationTurnScheduled ||
-      this.scheduledPreparations.length === 0 ||
-      this.encryptionKey.state !== 'ready'
-    ) {
-      return;
+  private launchPreparationsWaitingForKey(): void {
+    if (this.encryptionKey.state !== 'ready') return;
+    const key = this.encryptionKey.value;
+    for (const preparation of this.preparationsWaitingForKey.splice(0)) {
+      this.launchPreparation(preparation, key);
     }
-    this.preparationTurnScheduled = true;
-    setImmediate(() => {
-      this.preparationTurnScheduled = false;
-      if (this.encryptionKey.state !== 'ready') return;
-
-      const startedAt = performance.now();
-      let launched = 0;
-      while (
-        this.scheduledPreparations.length > 0 &&
-        launched < 16 &&
-        performance.now() - startedAt < 1
-      ) {
-        const scheduled = this.scheduledPreparations.shift();
-        if (!scheduled) break;
-        launched++;
-        this.launchPreparation(scheduled);
-      }
-      this.schedulePreparationTurn();
-    });
   }
 
-  private launchPreparation(scheduled: ScheduledPreparation): void {
-    if (this.encryptionKey.state !== 'ready') {
-      this.scheduledPreparations.unshift(scheduled);
-      return;
-    }
+  private launchPreparation(
+    scheduled: ScheduledPreparation,
+    key: PayloadKey | undefined
+  ): void {
     try {
-      const result = this.preparer(scheduled.value, this.encryptionKey.value);
+      const result = this.preparer(scheduled.value, key);
       if (result instanceof Promise) {
         void result.then(scheduled.resolve, scheduled.reject);
       } else {
@@ -371,8 +341,8 @@ export class ReplayPayloadCache {
     }
   }
 
-  private rejectScheduledPreparations(error: unknown): void {
-    for (const scheduled of this.scheduledPreparations.splice(0)) {
+  private rejectPreparationsWaitingForKey(error: unknown): void {
+    for (const scheduled of this.preparationsWaitingForKey.splice(0)) {
       scheduled.reject(error);
     }
   }
