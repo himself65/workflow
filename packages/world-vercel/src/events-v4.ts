@@ -1185,18 +1185,38 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
+  const frames = decodeFrames(chunks)[Symbol.asyncIterator]();
 
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      const end = EventStreamEndSchema.parse(frame.meta);
-      return { cursor: end.next ?? null, hasMore: end.hasMore };
+  try {
+    for (;;) {
+      let next: IteratorResult<DecodedFrame>;
+      try {
+        next = await frames.next();
+      } catch (cause) {
+        throw new WorkflowWorldError(
+          `v4 ${opName}: event frame stream failed after ${events.length} events`,
+          { code: 'TRANSPORT', cause }
+        );
+      }
+      if (next.done) break;
+
+      const frame = next.value;
+      if (frame.meta._end === 1) {
+        const end = EventStreamEndSchema.parse(frame.meta);
+        return { cursor: end.next ?? null, hasMore: end.hasMore };
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error(`v4 ${opName}: unexpected control frame`);
+      }
+      const event = decodeEventFrame(frame);
+      events.push(event);
+      // Deliberately outside the stream-read catch above: observer/application
+      // failures are not truncation and must never advance recovery past this
+      // event.
+      onEvent?.(event);
     }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error(`v4 ${opName}: unexpected control frame`);
-    }
-    const event = decodeEventFrame(frame);
-    events.push(event);
-    onEvent?.(event);
+  } finally {
+    await frames.return?.(undefined);
   }
 
   throw new WorkflowWorldError(
@@ -1231,6 +1251,9 @@ async function consumeReplayLogResponse({
   try {
     page = await consumeEventFrameStream(response, opName, events, onEvent);
   } catch (error) {
+    if (!WorkflowWorldError.is(error) || error.code !== 'TRANSPORT') {
+      throw error;
+    }
     const lastEvent = events.at(-1);
     if (!lastEvent) throw error;
     page = { cursor: `eid:${lastEvent.eventId}`, hasMore: true };

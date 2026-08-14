@@ -14,7 +14,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { once, setWorkflowBasePath } from '@workflow/utils';
+import { once, setWorkflowBasePath, withResolvers } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -565,7 +565,7 @@ function createReplayEventObserver({
   return (event) => {
     const deploymentId = replayEventDeploymentId(event);
     if (deploymentId) resolveKey(runId, { deploymentId });
-    if (cache.observeEvent(event)) preparationStarted();
+    cache.observeEvent(event, preparationStarted);
   };
 }
 
@@ -1048,23 +1048,17 @@ export function workflowEntrypoint(
                   // queue payload. This starts key resolution and payload
                   // preparation before the remainder of the event log arrives,
                   // without guessing the key for a cross-deployment run.
-                  let resolveReplayKeySource!: (source: {
+                  const {
+                    promise: replayKeySource,
+                    resolve: resolveReplayKeySource,
+                  } = withResolvers<{
                     runOrId: WorkflowRun | string;
                     context?: Record<string, unknown>;
-                  }) => void;
-                  let replayKeySourceResolved = false;
-                  const replayKeySource = new Promise<{
-                    runOrId: WorkflowRun | string;
-                    context?: Record<string, unknown>;
-                  }>((resolve) => {
-                    resolveReplayKeySource = resolve;
-                  });
+                  }>();
                   const resolveReplayKey = (
                     runOrId: WorkflowRun | string,
                     context?: Record<string, unknown>
                   ): void => {
-                    if (replayKeySourceResolved) return;
-                    replayKeySourceResolved = true;
                     resolveReplayKeySource({ runOrId, context });
                   };
                   const encryptionKeyPromise = replayKeySource.then(
@@ -1711,11 +1705,7 @@ export function workflowEntrypoint(
                         getStepFunction(incomingStepName)?.maxRetries ??
                         DEFAULT_STEP_MAX_RETRIES;
                       if (metadata.attempt > bgMaxRetries + 1) {
-                        const loaded = await loadWorkflowRunEvents(
-                          runId,
-                          undefined,
-                          observeReplayEvent
-                        );
+                        const loaded = await loadWorkflowRunEvents(runId);
                         bgAuthoritativeAttempt =
                           countStepStartedEvents(
                             loaded.events,
@@ -1829,11 +1819,7 @@ export function workflowEntrypoint(
                         // Load events to check if all parallel steps are done.
                         // Use cursor-based loading so the main loop can continue
                         // incrementally from here.
-                        const loaded = await loadWorkflowRunEvents(
-                          runId,
-                          undefined,
-                          observeReplayEvent
-                        );
+                        const loaded = await loadWorkflowRunEvents(runId);
                         eventLog = nextEventLogLoad(loaded);
 
                         // Check for pending steps: any step_created without

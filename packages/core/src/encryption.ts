@@ -32,10 +32,7 @@ export type CryptoKey = import('node:crypto').webcrypto.CryptoKey;
  * extractable or extending its lifetime beyond the `CryptoKey`. Browser/edge
  * callers continue to use Web Crypto and never consult this map.
  */
-const importedKeyMaterial = new WeakMap<
-  CryptoKey,
-  { raw: Uint8Array; usages: ReadonlySet<'encrypt' | 'decrypt'> }
->();
+const importedKeyMaterial = new WeakMap<CryptoKey, Uint8Array>();
 
 interface NodeDecipher {
   setAAD(data: Uint8Array): NodeDecipher;
@@ -110,10 +107,7 @@ export async function importKey(
   );
   // Copy the caller's bytes: a caller may reuse/mutate its input buffer after
   // importKey(), while a CryptoKey's material is immutable.
-  importedKeyMaterial.set(key, {
-    raw: raw.slice(),
-    usages: new Set(usages),
-  });
+  importedKeyMaterial.set(key, raw.slice());
   return key;
 }
 
@@ -133,7 +127,7 @@ export function decryptSync(
   const material = importedKeyMaterial.get(key);
   const nodeCrypto = getNodeCrypto();
   if (!material || !nodeCrypto) return undefined;
-  if (!material.usages.has('decrypt')) {
+  if (!key.usages.includes('decrypt')) {
     throw new RuntimeDecryptionError(
       'AES-256-GCM decryption failed: CryptoKey does not support decrypt',
       {
@@ -162,7 +156,7 @@ export function decryptSync(
   try {
     const decipher = nodeCrypto.createDecipheriv(
       'aes-256-gcm',
-      material.raw,
+      material,
       nonce,
       { authTagLength: TAG_BYTES }
     );
@@ -170,6 +164,7 @@ export function decryptSync(
     decipher.setAuthTag(authTag);
     const head = decipher.update(ciphertext);
     const tail = decipher.final();
+    if (tail.byteLength === 0) return head;
     const plaintext = new Uint8Array(head.byteLength + tail.byteLength);
     plaintext.set(head, 0);
     plaintext.set(tail, head.byteLength);

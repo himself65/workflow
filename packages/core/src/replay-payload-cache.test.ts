@@ -116,13 +116,22 @@ describe('ReplayPayloadCache', () => {
 
   it('prepares streamed events synchronously inside the decoder callback', async () => {
     const payload = new Uint8Array([1]);
-    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+    const order: string[] = [];
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => {
+      order.push('prepare');
+      return { data: value };
+    });
     const cache = new ReplayPayloadCache(undefined, preparer);
     const [event] = makeEvents([payload]);
 
-    const preparation = cache.observeEvent(event);
+    const preparation = cache.observeEvent(event, () => order.push('start'));
     expect(preparation).toBeDefined();
     expect(preparer).toHaveBeenCalledOnce();
+    expect(order).toEqual(['start', 'prepare']);
+
+    // Re-observing a cache hit does not move the preparation-span boundary.
+    cache.observeEvent(event, () => order.push('cached-start'));
+    expect(order).toEqual(['start', 'prepare']);
 
     await expect(preparation).resolves.toEqual({ data: payload });
   });
