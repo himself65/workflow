@@ -553,22 +553,22 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.52.2"
+version = "0.52.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/53/be79eff13cc289570b4c6875fa4641a91a1dc51ece7f6213f364b0a58c4c/uvicorn-0.52.2.tar.gz", hash = "sha256:4294500b9c8f7a3ef3e975d9e4be08c3eb76441af449a9e6e10146c6a182ffec", size = 100685, upload-time = "2026-08-13T07:03:57.377Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/28/64ca011edf31c715b4fad359c587ea52391aaffa125065695590241ff617/uvicorn-0.52.3.tar.gz", hash = "sha256:18857b9e6579300be55c91c0a1cfd37d9a2cf0cabea33b88275f199eb73b8b58", size = 100621, upload-time = "2026-08-13T16:50:02.899Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/08/0d834cf3e61e476c9f422e856a9e37d12d708d7ada942a2774b1f42aee6c/uvicorn-0.52.2-py3-none-any.whl", hash = "sha256:0b916d247cf5500b320638ea11abf0fed7f348e8e1c7fde53a0e6b6319803512", size = 79912, upload-time = "2026-08-13T07:03:55.658Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/2b/ebd108734a8204c6b4b93c681c9a38c5273b3ccd5d129fee4ffc1d97772c/uvicorn-0.52.3-py3-none-any.whl", hash = "sha256:116af2710dbf47c80f463cd20ee4884b6662f4c9f227d797ddc7279d2fcc2c7c", size = 79859, upload-time = "2026-08-13T16:50:01.323Z" },
 ]
 
 [[package]]
 name = "vercel"
 version = "0.10.0"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "anyio" },
     { name = "cbor2" },
@@ -594,7 +594,7 @@ encryption = [
 [[package]]
 name = "vercel-cache"
 version = "0.7.2"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-cache&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-cache&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "httpx" },
     { name = "vercel-headers" },
@@ -604,12 +604,12 @@ dependencies = [
 [[package]]
 name = "vercel-headers"
 version = "0.7.1"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-headers&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-headers&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 
 [[package]]
 name = "vercel-internal-core"
 version = "0.1.2"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-internal-core&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-internal-core&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -619,7 +619,7 @@ dependencies = [
 [[package]]
 name = "vercel-internal-telemetry"
 version = "0.7.2"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-internal-telemetry&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-internal-telemetry&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "httpx" },
     { name = "vercel-oidc" },
@@ -628,7 +628,7 @@ dependencies = [
 [[package]]
 name = "vercel-oidc"
 version = "0.8.0"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-oidc&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-oidc&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -638,7 +638,7 @@ dependencies = [
 [[package]]
 name = "vercel-queue"
 version = "0.8.0"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-queue&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-queue&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx", extra = ["http2"] },
@@ -652,7 +652,7 @@ dependencies = [
 [[package]]
 name = "vercel-sandbox"
 version = "0.4.0"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-sandbox&rev=2edb22407f9eedb102d54cc352a663c48d10468c#2edb22407f9eedb102d54cc352a663c48d10468c" }
+source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-sandbox&rev=93979e46f08da505f58c16dc513f8cb344c9c64a#93979e46f08da505f58c16dc513f8cb344c9c64a" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -790,6 +790,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "uvicorn", specifier = ">=0.30" },
-    { name = "vercel", extras = ["encryption"], git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel&rev=2edb22407f9eedb102d54cc352a663c48d10468c" },
-    { name = "vercel-queue", git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-queue&rev=2edb22407f9eedb102d54cc352a663c48d10468c" },
+    { name = "vercel", extras = ["encryption"], git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel&rev=93979e46f08da505f58c16dc513f8cb344c9c64a" },
+    { name = "vercel-queue", git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-queue&rev=93979e46f08da505f58c16dc513f8cb344c9c64a" },
 ]

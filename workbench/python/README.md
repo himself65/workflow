@@ -10,10 +10,10 @@ Built on [vercel-py](https://github.com/vercel/vercel-py), pinned by commit in
 which is what drags the whole vercel-py workspace out of the checkout instead of
 PyPI. Bump both together, deliberately, and re-run the suite when you do.
 
-**That rev is currently not on vercel-py `main`.** It is the head of the
-unmerged resilient-start stack, rebased onto a main that already has the
-streaming API. `pyproject.toml` has the reasoning and the measurements next to
-the pin. Repin to `main` when the stack lands.
+**That rev is currently not on vercel-py `main`.** It is one commit above it,
+for `encp` support; the resilient-start stack it also used to carry has since
+merged. `pyproject.toml` has the reasoning and the measurements next to the pin.
+Repin to `main` when that commit lands.
 
 ## Running it
 
@@ -209,14 +209,19 @@ is the same shape, just with a message naming what to install.
 Reading is all this app needs. Python still writes plain `devl`, and the
 TypeScript reader passes non-`encr` payloads through untouched
 (`maybeDecrypt`, `packages/core/src/serialization/encryption.ts:284`), so the
-two sides interoperate without Python ever encrypting anything. `encp`, the
-X25519 sealed-box format, is still reported as unsupported — and this used to
-add "nothing in the suite produces one", which stopped being true the moment a
-hook fixture reached this lane. It is not only the format one run uses to write
-to another: it is what *every* hook payload arrives as here, because the driver
-resumes from outside the run with no symmetric key, so the payload is sealed to
-the run's public key instead. See the `unsupported` entry for
-`hookWithSleepFinalStepWorkflow`.
+two sides interoperate without Python ever encrypting anything.
+
+`encp`, the X25519 sealed-box format, went the same way one pin later, and it is
+worth knowing why it is not the niche format its description suggests. This file
+used to call it "the format one run uses to write to another" and add that
+nothing in the suite produces one; both stopped being true the moment a hook
+fixture reached this lane. It is what **every** hook payload arrives as here,
+because the driver resumes from outside the run with no symmetric key, so
+`@workflow/world-vercel` seals to the run's public key instead — a run that
+cannot read `encp` fails any hook fixture outright. Upstream derives the X25519
+keypair from the same run key material `encr` already resolves, so the fix needed
+no new key plumbing; `cryptography` supplies X25519 behind the same `encryption`
+extra.
 
 Again `world-local` is exempt — no deployment key, nothing to derive from, so
 the local lane could never have caught this. It is the clearest case so far of
@@ -250,24 +255,23 @@ Vercel lane collects 19 more tests — `e2e-agent.test.ts`, which it also picks 
 and skips whole — and passes one fewer, because `deploymentId: 'latest' is a
 no-op in non-Vercel worlds` is local by definition. It is one baseline, not two.
 
-Five entries, four upstream causes — the last accounts for two — and they are
+Five entries, three upstream causes — the last accounts for two — and they are
 worth reading together rather than one at a time:
 
-- One is `encp`, and it is the only entry exempted for a lane it *passes* on.
-  On Vercel the driver resumes a hook as an external client with no symmetric
-  run key, so the payload arrives sealed to the run's public key in the X25519
-  `encp` format, which vercel-py does not read — the run fails on its first
-  payload. `world-local` never encrypts, so the same test passes here.
-  `unsupported` is not lane-aware, so exempting it costs the local signal; the
-  alternative was leaving the Vercel lane red. This is what the note further up
-  about `encp` being "reported as unsupported; nothing in the suite produces
-  one" was waiting for — something now does, and it is every hook fixture.
-- Two are the hook fixtures below, and they are the only entries here found *by*
-  the suite rather than predicted before it ran: `hookWithSleepWorkflow` stalls
-  on the transition from a delivered hook payload into a new step, and
-  `hookTokenReuseLoopWorkflow` does not free a token on `dispose()` in time for
-  the same run to reclaim it. Their neighbours passing is what makes each one
-  specific — see the reasons in `e2e-conformance.json`.
+- **Three are hooks, and all three may be one bug.** `hookWithSleepWorkflow`
+  stalls whenever a hook payload is followed by a step: the payload lands, the
+  step is never created, the delivery answers 200 and the run sits in `running`.
+  `hookWithSleepFinalStepWorkflow` usually escapes that — its step comes after
+  the *second* payload — but it timed out once in seven full-suite runs with the
+  same signature, which is what turns "a stall in one body shape" into "a race
+  the other fixture is also exposed to". `hookTokenReuseLoopWorkflow` is
+  separate and cleaner: `hook_created` and `hook_disposed` are flushed with no
+  ordering, so a run conflicts against its own disposed hook.
+
+  These are the only entries here found *by* the suite rather than predicted
+  before it ran, and the cost is more than three tests: with every hook fixture
+  that carries a payload exempted, nothing exercises `encp` any more, so the fix
+  for that is on upstream's unit tests until the stall is fixed.
 - The remaining two are one cause: a thrown error losing its identity across the
   event log, so a `FatalError` a step raised arrives at the workflow's `except`
   as a plain

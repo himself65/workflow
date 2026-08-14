@@ -24,26 +24,29 @@ dependencies = [
 # Python SDK's `main` so the conformance suite reports on what is actually
 # being built. Bump `rev` deliberately, and re-run the suite when you do.
 #
-# **This rev is not on `main` yet.** It is the head of vercel-py's
-# resilient-start stack (#282/#283/#284 plus a fourth commit), rebased onto a
-# main that already carries the streaming API. Repin to plain `main` the moment
-# it merges; until then this is the thing to check first if the SDK behaves
-# unlike its published source.
+# **This rev is not on `main` yet**, but almost all of it is: the
+# resilient-start stack merged (#282/#283/#284), and the pin sits one commit
+# above it for `encp` support. Repin to plain `main` when that lands; until then
+# this is the thing to check first if the SDK behaves unlike its published
+# source.
 #
-# What it buys, measured, and why it is worth pinning off `main` for:
+# Why each of those mattered here, measured rather than assumed:
 #
-# - `sleepWinsRaceWorkflow` and `stepWinsRaceWorkflow` stop failing about half of
-#   all runs. A run's first delivery no longer 500s on a run row that has not
-#   landed yet, so it no longer costs the ~5s the world waits before redelivering
-#   — which was the entire budget those two tests measure against.
-# - `resilient start: addTenWorkflow completes when run_created returns 500`
-#   passes, which is the test the whole stack is about.
-#
-# Three `unsupported` entries came out with it, and one of the stack's four
-# commits exists because this lane found it: `world-local`'s JSON queue smuggles
-# `bytes` through as a `{__type: "Uint8Array"}` envelope, the file store already
-# spoke that dialect and the queue did not, and nothing noticed until
-# `runInput.input` became the first queue payload to carry bytes.
+# - Resilient start closed three `unsupported` entries. A run's first delivery no
+#   longer 500s on a run row that has not landed yet, so it no longer costs the
+#   ~5s the world waits before redelivering — which was the entire budget
+#   `sleepWinsRaceWorkflow` and `stepWinsRaceWorkflow` measure against — and
+#   `resilient start: addTenWorkflow completes when run_created returns 500`
+#   passes. One of that stack's commits exists because this lane found it:
+#   `world-local`'s JSON queue smuggles `bytes` through as a
+#   `{__type: "Uint8Array"}` envelope, the file store already spoke that dialect
+#   and the queue did not, and nothing noticed until `runInput.input` became the
+#   first queue payload to carry bytes.
+# - `encp` closed nothing *yet*, and is pinned anyway. On Vercel every hook
+#   payload arrives sealed to the run's public key, so without it the deployed
+#   lane fails any hook fixture outright rather than skipping it. The fixture
+#   that proved this is still exempt, for an unrelated stall, so the suite cannot
+#   currently confirm the fix — see `e2e-conformance.json`.
 #
 # `subdirectory` is required — the vercel-py repo root is a uv workspace whose
 # build backend raises, so only the leaf packages are installable on their own.
@@ -78,8 +81,8 @@ dependencies = [
 #     builder then reject under `--locked`. `uv run` re-locks too, which is why
 #     the `dev` script passes it as well.
 [tool.uv.sources]
-vercel = { git = "https://github.com/vercel/vercel-py", rev = "2edb22407f9eedb102d54cc352a663c48d10468c", subdirectory = "src/vercel" }
-vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "2edb22407f9eedb102d54cc352a663c48d10468c", subdirectory = "src/vercel-queue" }
+vercel = { git = "https://github.com/vercel/vercel-py", rev = "93979e46f08da505f58c16dc513f8cb344c9c64a", subdirectory = "src/vercel" }
+vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "93979e46f08da505f58c16dc513f8cb344c9c64a", subdirectory = "src/vercel-queue" }
 
 # How `@vercel/python` builds this app. Reached only because `vercel.json`
 # declares `pyproject.toml` as the build src, which puts the builder in
