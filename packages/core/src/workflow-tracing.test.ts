@@ -104,4 +104,30 @@ describe('fresh replay tracing', () => {
       )
     ).toEqual([false, true]);
   });
+
+  it('reports a bundle hit when only a different workflow lookup compiles', async () => {
+    const firstName = 'workflow//./workflows/shared//first';
+    const secondName = 'workflow//./workflows/shared//second';
+    const sharedBundle = `
+async function first(value) { return value; }
+async function second(value) { return value; }
+globalThis.__private_workflows = new Map();
+globalThis.__private_workflows.set(${JSON.stringify(firstName)}, first);
+globalThis.__private_workflows.set(${JSON.stringify(secondName)}, second);
+`;
+    const firstRun = { ...(await makeRun()), workflowName: firstName };
+    const secondRun = { ...(await makeRun()), workflowName: secondName };
+
+    await runWorkflow(sharedBundle, firstRun, [], undefined);
+    await runWorkflow(sharedBundle, secondRun, [], undefined);
+
+    const compileSpans = exporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'workflow.bundle.compile');
+    expect(
+      compileSpans.map(
+        (span) => span.attributes['workflow.bundle.compile.cache_hit']
+      )
+    ).toEqual([false, true]);
+  });
 });

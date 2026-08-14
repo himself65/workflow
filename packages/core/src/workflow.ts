@@ -1080,9 +1080,11 @@ async function createWorkflowSession({
         filename
       );
       span?.setAttributes({
-        ...Attribute.WorkflowBundleCompileCacheHit(
-          bundle.cacheHit && lookup.cacheHit
-        ),
+        // This attribute intentionally describes the workflow bundle. The
+        // tiny workflow-name lookup script has its own cache entry and may
+        // miss when another workflow from the same source file runs, but that
+        // does not mean V8 recompiled the application bundle.
+        ...Attribute.WorkflowBundleCompileCacheHit(bundle.cacheHit),
       });
       return {
         bundleScript: bundle.script,
